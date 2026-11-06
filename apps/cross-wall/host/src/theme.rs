@@ -113,10 +113,10 @@ fn visuals(look: &Look, dark: bool, accent: Color32) -> egui::Visuals {
     v.extreme_bg_color = if dark { shade(-10) } else { Color32::WHITE };
     v.hyperlink_color = readable_on(accent, shade(0));
     v.selection.bg_fill = accent;
-    v.selection.stroke = Stroke::new(1.0, on_colour(accent));
+    v.selection.stroke = Stroke::new(1.0_f32, on_colour(accent));
     v.window_corner_radius = CornerRadius::same(look.corner.saturating_add(4));
     v.menu_corner_radius = radius;
-    v.window_stroke = Stroke::new(1.0, shade(22));
+    v.window_stroke = Stroke::new(1.0_f32, shade(22));
     for (state, fill) in [
         (&mut v.widgets.noninteractive, shade(0)),
         (&mut v.widgets.inactive, shade(16)),
@@ -128,10 +128,10 @@ fn visuals(look: &Look, dark: bool, accent: Color32) -> egui::Visuals {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
         state.expansion = 0.0;
-        state.fg_stroke = Stroke::new(1.0, text);
+        state.fg_stroke = Stroke::new(1.0_f32, text);
         state.bg_stroke = Stroke::NONE;
     }
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, shade(16));
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, shade(16));
     v
 }
 

@@ -228,7 +228,7 @@ fn caption(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, danger: bool) -> boo
             ui.painter().rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
         }
     }
-    let stroke = egui::Stroke::new(1.2, ink);
+    let stroke = egui::Stroke::new(1.2_f32, ink);
     let c = rect.center();
     let r = 5.0;
     let painter = ui.painter();

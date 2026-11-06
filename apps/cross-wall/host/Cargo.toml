@@ -16,6 +16,7 @@ path = "src/bin/cross-wall-launcher.rs"
 bones-kernel = { path = "../../../vendor/bones/crates/bones-kernel", default-features = false, features = ["presentation", "upgrade", "desktop"] }
 bones-launcher = { path = "../../../vendor/bones/crates/bones-launcher" }
 egui = "0.32"
+egui-phosphor = { version = "0.10", default-features = false, features = ["regular", "fill"] }
 sdl3 = { version = "0.18.4", features = ["build-from-source-static", "unsafe_textures"] }
 arboard = "3"
 open = "5"
@@ -32,7 +33,6 @@ egui_animation = "0.9.0"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
-egui-phosphor = { version = "0.10", default-features = false, features = ["regular", "fill"] }
 
 [build-dependencies]
 winresource = "0.1"
