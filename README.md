@@ -1,6 +1,6 @@
 # cross-wall
 
-Browse wallpapers from Wallhaven, Openverse, Wikimedia Commons, Lorem Picsum, or NASA Images, keep the ones you like on all your computers, and set them as your wallpaper. Runs on Windows (x64, ARM64) and Linux (x64), and applies wallpapers on Windows, KDE Plasma, GNOME, and COSMIC. Built on [bones](https://github.com/an-dr/bones) with a native egui interface.
+Browse wallpapers from Wallhaven, Openverse, Wikimedia Commons, Lorem Picsum, or NASA Images, keep them organised in a folder of your own, and set them as your wallpaper. Runs on Windows (x64, ARM64) and Linux (x64), and applies wallpapers on Windows, KDE Plasma, GNOME, and COSMIC. Built on [bones](https://github.com/an-dr/bones) with a native egui interface.
 
 ## Install
 
@@ -16,7 +16,7 @@ Linux:
 curl -fsSL https://raw.githubusercontent.com/an-dr/cross-wall/main/scripts/install.sh | sh
 ```
 
-Both install for the current user into `~/.cross-wall`, with no administrator rights, and add the app to the application list. They need a published release. Update from Settings; remove the app with Unregister in Settings, then delete that folder. Your liked photos stay.
+Both install for the current user into `~/.cross-wall`, with no administrator rights, and add the app to the application list. They need a published release. Update from Settings; remove the app with Unregister in Settings, then delete that folder. Your wallpaper folder stays.
 
 ## Build from source
 
@@ -29,7 +29,7 @@ Needs a Rust toolchain, a C compiler, CMake, and Ninja, because bones builds SDL
 
 ## Use it
 
-Browse works straight away with no account or key, showing photos at least as big as your main display until you pick another minimum resolution. Check each photo's licence before using it beyond your own desktop: Wallhaven images are uploaded by users and often state none. To sync, set a sync folder there that Syncthing, Dropbox, OneDrive, or a similar tool keeps in sync; the app does not copy files between computers itself.
+Browse works straight away with no account or key, showing photos at least as big as your main display until you pick another minimum resolution. Check each photo's licence before using it beyond your own desktop: Wallhaven images are uploaded by users and often state none. Choose a wallpaper folder in Settings: downloads go to its root, and the Library shows and organises everything in it.
 
 ## Documentation
 

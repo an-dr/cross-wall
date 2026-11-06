@@ -3,6 +3,7 @@ mod providers;
 
 use std::fmt;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -157,16 +158,39 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// How far one download has come. Shared between the worker and the screens.
+#[derive(Debug, Default)]
+pub struct Progress {
+    done: AtomicU64,
+    total: AtomicU64,
+}
+
+impl Progress {
+    pub fn set_total(&self, total: u64) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn advance(&self, bytes: u64) {
+        self.done.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Bytes received, and the full size when the server stated one.
+    pub fn read(&self) -> (u64, Option<u64>) {
+        let total = self.total.load(Ordering::Relaxed);
+        (self.done.load(Ordering::Relaxed), (total > 0).then_some(total))
+    }
+}
+
 /// One HTTP GET. A seam so tests run with no network.
 pub trait Transport: Send + Sync {
     /// Answers the status and body; an `Err` means no answer at all.
-    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String>;
+    fn get(&self, url: &str, progress: &Progress) -> Result<(u16, Vec<u8>), String>;
 }
 
 pub struct Https;
 
 impl Transport for Https {
-    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String> {
+    fn get(&self, url: &str, progress: &Progress) -> Result<(u16, Vec<u8>), String> {
         if !url.starts_with("https://") {
             return Err("only https URLs may be fetched".into());
         }
@@ -184,11 +208,22 @@ impl Transport for Https {
             Err(error) => return Err(error.to_string()),
         };
         let status = response.status();
+        if let Some(total) = response.header("Content-Length").and_then(|v| v.parse().ok()) {
+            progress.set_total(total);
+        }
         let mut body = Vec::new();
-        // One byte past the cap, so an oversized body fails instead of truncating.
-        response.into_reader().take(MAX_BYTES + 1).read_to_end(&mut body).map_err(|e| e.to_string())?;
-        if body.len() as u64 > MAX_BYTES {
-            return Err("response too large".into());
+        let mut reader = response.into_reader();
+        let mut chunk = vec![0; 64 * 1024];
+        loop {
+            let read = reader.read(&mut chunk).map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..read]);
+            progress.advance(read as u64);
+            if body.len() as u64 > MAX_BYTES {
+                return Err("response too large".into());
+            }
         }
         Ok((status, body))
     }
@@ -218,7 +253,7 @@ impl Client {
     pub fn search(&self, source: Source, query: &str, orientation: Orientation, min: MinSize, page: u32) -> Result<Page, Error> {
         let min = min.turned_for(orientation);
         let url = providers::url(source, query, orientation, min, page);
-        let body = check(self.transport.get(&url))?;
+        let body = check(self.transport.get(&url, &Progress::default()))?;
         let mut result = providers::parse(source, &body)?;
         // Several sources cannot filter by size or shape, so every answer is checked here.
         result.photos.retain(|p| orientation.accepts(p.width, p.height) && min.accepts(p.width, p.height));
@@ -233,7 +268,12 @@ impl Client {
 
     /// Downloads an image from a URL a source gave.
     pub fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
-        check(self.transport.get(url))
+        self.download_tracked(url, &Progress::default())
+    }
+
+    /// As `download`, reporting bytes received as they arrive.
+    pub fn download_tracked(&self, url: &str, progress: &Progress) -> Result<Vec<u8>, Error> {
+        check(self.transport.get(url, progress))
     }
 }
 

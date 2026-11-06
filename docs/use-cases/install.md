@@ -12,7 +12,7 @@
 - **Actor**: Wallpaper user.
 - **Goal**: Remove the app and keep my photos.
 - **Flow**: Press Unregister in Settings, then delete the install folder the app names.
-- **Success**: The app leaves the application list. Liked photos and the sync folder are untouched.
+- **Success**: The app leaves the application list. The wallpaper folder is untouched.
 
 ### UC-UPDATE-01: Update the app
 

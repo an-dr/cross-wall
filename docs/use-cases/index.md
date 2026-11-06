@@ -8,4 +8,4 @@ Actor: **Wallpaper user**, one person with several computers who collects photos
 
 Areas: [setup](setup.md), [browse](browse.md), [library](library.md), [apply](apply.md), [install](install.md).
 
-Not offered: scheduled rotation, per-monitor wallpapers, a tray icon, MSI or distribution packages, macOS, Linux ARM64, Pexels and Unsplash, accounts or a server, and the transport that copies the sync folder between computers.
+Not offered: scheduled rotation, per-monitor wallpapers, a tray icon, MSI or distribution packages, macOS, Linux ARM64, Pexels and Unsplash, accounts or a server, and syncing between computers. A wallpaper folder can sit inside a sync tool's folder, but the app does not manage that.

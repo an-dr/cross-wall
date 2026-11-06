@@ -16,7 +16,10 @@ pub enum ThemeMode {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeMode,
-    pub sync_folder: String,
+    /// The folder the user chose. Downloads go to its root.
+    pub wallpaper_folder: String,
+    /// Shows the library as sections per folder instead of one folder at a time.
+    pub library_groups: bool,
     /// Multiplies the display scale, which the app follows by itself.
     pub ui_zoom: f32,
     /// `None` follows the main display. `[0, 0]` is any size.
@@ -25,7 +28,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: ThemeMode::Dark, sync_folder: String::new(), ui_zoom: 1.0, min_resolution: None }
+        Self { theme: ThemeMode::Dark, wallpaper_folder: String::new(), library_groups: false, ui_zoom: 1.0, min_resolution: None }
     }
 }
 
@@ -63,8 +66,8 @@ mod tests {
     #[test]
     fn the_theme_starts_dark_even_for_older_settings_files() {
         assert_eq!(Settings::default().theme, ThemeMode::Dark);
-        let old: Settings = serde_json::from_str(r#"{"pexels_key":"gone","sync_folder":"f"}"#).unwrap();
-        assert_eq!((old.theme, old.sync_folder.as_str()), (ThemeMode::Dark, "f"));
+        let old: Settings = serde_json::from_str(r#"{"pexels_key":"gone","sync_folder":"old","wallpaper_folder":"f"}"#).unwrap();
+        assert_eq!((old.theme, old.wallpaper_folder.as_str()), (ThemeMode::Dark, "f"));
     }
 
     #[test]
@@ -72,7 +75,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a/settings.json");
         assert_eq!(Settings::load(&path), Settings::default());
-        let settings = Settings { theme: ThemeMode::Light, sync_folder: "f".into(), ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
+        let settings = Settings { theme: ThemeMode::Light, wallpaper_folder: "f".into(), library_groups: true, ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
         std::fs::write(&path, "{broken").unwrap();

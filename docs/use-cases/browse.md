@@ -25,5 +25,5 @@
 
 - **Actor**: Wallpaper user.
 - **Goal**: Judge a photo before keeping it.
-- **Flow**: Click a thumbnail, and step through photos with the arrow keys.
+- **Flow**: Click a thumbnail, and step through photos with the arrow keys. A big image shows download progress, then a message while it is prepared.
 - **Success**: A full-window view shows the photo, its creator, size, and licence where known, with Like and Apply buttons.

@@ -1,13 +1,18 @@
 //! The screens. Slow work runs on threads; results return through channels
 //! drained each frame, so the frame thread never waits on network or disk.
-use std::collections::HashSet;
+mod library_view;
+
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use bones_kernel::messages::upgrader::Action;
 use cross_wall_apply::Desktop;
-use cross_wall_library::{Library, Like};
-use cross_wall_sources::{Client, MinSize, Orientation, Photo, Source};
+use cross_wall_library::{extension_for, Snapshot};
+use cross_wall_sources::{Client, MinSize, Orientation, Photo, Progress, Source};
+
+use library_view::{entry_photo, Dialog};
 
 use egui_animation::{animate_bool_eased, easing};
 
@@ -17,7 +22,7 @@ use crate::egui_module::App;
 use crate::gallery;
 use crate::images::{self, Images, Slot};
 use crate::installation::{self, UpdateState};
-use crate::librarian::{Command, Librarian};
+use crate::librarian::{now, Command, Librarian};
 use crate::settings::{Settings, ThemeMode};
 use crate::theme::{self, System};
 
@@ -32,12 +37,13 @@ const SCALE_POLL: f64 = 1.0;
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Browse,
+    Library,
     Liked,
     Settings,
 }
 
-fn shared_folder(settings: &Settings) -> Option<PathBuf> {
-    let folder = settings.sync_folder.trim();
+fn chosen_folder(settings: &Settings) -> Option<PathBuf> {
+    let folder = settings.wallpaper_folder.trim();
     (!folder.is_empty()).then(|| PathBuf::from(folder))
 }
 
@@ -52,11 +58,17 @@ pub struct CrossWall {
     images: Images,
     browse: Browse,
     preview: Option<Photo>,
-    /// Only names image files here; the librarian thread owns all writes.
-    library: Library,
+    /// The folder as last scanned. The librarian thread owns all writes.
+    snapshot: Snapshot,
     librarian: Librarian,
-    likes: Vec<Like>,
-    pending: HashSet<String>,
+    /// Downloads and like changes under way, by photo id.
+    pending: HashMap<String, Arc<Progress>>,
+    current_folder: String,
+    dialog: Option<Dialog>,
+    picked_tx: Sender<Option<PathBuf>>,
+    picked_rx: Receiver<Option<PathBuf>>,
+    preview_progress: (String, Arc<Progress>),
+    apply_progress: Arc<Progress>,
     update_requests: Sender<Action>,
     update_results: Receiver<UpdateState>,
     update_available: Option<String>,
@@ -91,7 +103,7 @@ impl CrossWall {
         let cache_to_prune = cache.clone();
         std::thread::spawn(move || images::prune_cache(&cache_to_prune));
         let tab = Tab::Browse;
-        let local = data_dir.join("library");
+        let (picked_tx, picked_rx) = channel();
         let (applied_tx, applied_rx) = channel();
         // An unsupported desktop still needs a look; applying says it is unsupported.
         let desktop = cross_wall_apply::detect().unwrap_or(Desktop::Gnome);
@@ -124,10 +136,15 @@ impl CrossWall {
             wallpaper_dir: data_dir.join("wallpaper"),
             applied_tx,
             applied_rx,
-            library: Library::new(local.clone(), None),
-            librarian: Librarian::start(local, shared_folder(&settings)),
-            likes: Vec::new(),
-            pending: HashSet::new(),
+            snapshot: Snapshot::default(),
+            librarian: Librarian::start(chosen_folder(&settings)),
+            pending: HashMap::new(),
+            current_folder: String::new(),
+            dialog: None,
+            picked_tx,
+            picked_rx,
+            preview_progress: (String::new(), Arc::default()),
+            apply_progress: Arc::default(),
             tab,
             client: Client::new(),
             draft: settings.clone(),
@@ -144,8 +161,9 @@ impl CrossWall {
     fn save_settings(&mut self) {
         self.status = match self.draft.save(&self.settings_path) {
             Ok(()) => {
-                if self.draft.sync_folder != self.settings.sync_folder {
-                    let _ = self.librarian.commands.send(Command::SetShared(shared_folder(&self.draft)));
+                if self.draft.wallpaper_folder != self.settings.wallpaper_folder {
+                    self.command(Command::SetRoot(chosen_folder(&self.draft)));
+                    self.current_folder.clear();
                 }
                 self.settings = self.draft.clone();
                 "Saved.".into()
@@ -154,13 +172,42 @@ impl CrossWall {
         };
     }
 
+    /// Saves a choice made outside the Save button. Only a failure is mentioned.
+    fn save_quietly(&mut self) {
+        if let Err(error) = self.settings.save(&self.settings_path) {
+            self.status = format!("Could not save settings: {error}");
+        }
+    }
+
+    /// The system's folder dialog blocks, so it runs on its own thread.
+    fn pick_folder(&self) {
+        let tx = self.picked_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(rfd::FileDialog::new().set_title("Choose your wallpaper folder").pick_folder());
+        });
+    }
+
+    fn poll_picked_folder(&mut self) {
+        while let Ok(picked) = self.picked_rx.try_recv() {
+            if let Some(folder) = picked {
+                self.draft.wallpaper_folder = folder.display().to_string();
+                self.save_settings();
+            }
+        }
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(680.0));
             ui.heading("Settings");
-            card(ui, "Sync", |ui| {
-                ui.label("Folder kept in sync by Syncthing, Dropbox, OneDrive, or a similar tool");
-                ui.add(egui::TextEdit::singleline(&mut self.draft.sync_folder).desired_width(f32::INFINITY));
+            card(ui, "Wallpaper folder", |ui| {
+                ui.label("Downloads go to the root of this folder. Your images and subfolders in it appear in the Library.");
+                ui.horizontal(|ui| {
+                    if ui.button("Choose").clicked() {
+                        self.pick_folder();
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut self.draft.wallpaper_folder).desired_width(f32::INFINITY));
+                });
             });
             card(ui, "Appearance", |ui| {
                 ui.horizontal(|ui| {
@@ -173,9 +220,7 @@ impl CrossWall {
                         self.settings.theme = mode;
                         self.draft.theme = mode;
                         self.apply_theme(ui.ctx());
-                        if let Err(error) = self.settings.save(&self.settings_path) {
-                            self.status = format!("Could not save settings: {error}");
-                        }
+                        self.save_quietly();
                     }
                 });
                 ui.horizontal(|ui| {
@@ -247,16 +292,25 @@ impl CrossWall {
         }
     }
 
-    fn is_liked(&self, id: &str) -> bool {
-        self.likes.iter().any(|like| like.photo.id == id)
+    /// The kept file behind a photo, whether it came from the library or Browse.
+    fn entry_for(&self, photo: &Photo) -> Option<&cross_wall_library::Entry> {
+        match photo.id.strip_prefix("file:") {
+            Some(path) => self.snapshot.find_path(path),
+            None => self.snapshot.find_photo(&photo.id),
+        }
+    }
+
+    fn local_file(&self, photo: &Photo) -> Option<PathBuf> {
+        let entry = self.entry_for(photo)?;
+        Some(chosen_folder(&self.settings)?.join(&entry.path))
     }
 
     fn thumb_slot(&mut self, photo: &Photo) -> &Slot {
-        // A liked photo needs no network, and thumbnails for it must work offline.
-        if self.is_liked(&photo.id) {
-            let path = self.library.image(&photo.id);
-            return self.images.get(&format!("liked/{}", photo.id), || {
-                Box::new(move || std::fs::read(path).map_err(|e| e.to_string()))
+        // Files in the folder need no network, so the library works offline.
+        if let Some(path) = photo.id.strip_prefix("file:") {
+            let file = chosen_folder(&self.settings).unwrap_or_default().join(path);
+            return self.images.get(&format!("file/{path}"), || {
+                Box::new(move || std::fs::read(file).map_err(|e| e.to_string()))
             });
         }
         let (client, wanted, path) =
@@ -267,46 +321,63 @@ impl CrossWall {
     }
 
     fn liked_ui(&mut self, ui: &mut egui::Ui) {
-        if self.likes.is_empty() {
-            empty_state(ui, "♥", "Nothing liked yet", "Photos you like are kept here and work offline.");
+        let photos: Vec<Photo> = self.snapshot.files.iter().filter(|e| e.info.liked).map(entry_photo).collect();
+        if photos.is_empty() {
+            empty_state(ui, "♥", "Nothing liked yet", "Like a wallpaper in Browse or the Library to see it here.");
             return;
         }
-        let photos: Vec<Photo> = self.likes.iter().map(|like| like.photo.clone()).collect();
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.gallery(ui, &photos));
+        self.shown = photos.clone();
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.gallery_rows(ui, &photos));
     }
 
-    fn like_button(&mut self, ui: &mut egui::Ui, photo: &Photo) {
-        if self.pending.contains(&photo.id) {
+    /// Download and Like for a photo, or its progress while one is under way.
+    fn keep_buttons(&mut self, ui: &mut egui::Ui, photo: &Photo) {
+        if let Some(progress) = self.pending.get(&photo.id) {
             ui.spinner();
-            ui.label("Saving");
-        } else if self.is_liked(&photo.id) {
-            if ui.button("Unlike").clicked() {
-                self.pending.insert(photo.id.clone());
-                let _ = self.librarian.commands.send(Command::Unlike(photo.id.clone()));
-            }
-        } else if primary_button(ui, "Like").clicked() {
-            self.pending.insert(photo.id.clone());
-            let _ = self.librarian.commands.send(Command::Like(self.client.clone(), photo.clone()));
+            ui.label(progress_text(progress.read(), "Saving"));
+            return;
         }
+        let kept = self.entry_for(photo).map(|e| (e.path.clone(), e.info.liked));
+        let liked = kept.as_ref().is_some_and(|k| k.1);
+        let heart = if liked { "♥ Liked" } else { "♡ Like" };
+        if ui.button(heart).clicked() {
+            self.pending.insert(photo.id.clone(), Arc::default());
+            match &kept {
+                Some((path, liked)) => self.command(Command::SetLiked { path: path.clone(), liked: !liked, key: photo.id.clone() }),
+                None => self.start_download(photo, true),
+            }
+        }
+        if kept.is_none() && primary_button(ui, "Download").clicked() {
+            self.pending.insert(photo.id.clone(), Arc::default());
+            self.start_download(photo, false);
+        }
+    }
+
+    fn start_download(&mut self, photo: &Photo, liked: bool) {
+        let progress = self.pending.get(&photo.id).cloned().unwrap_or_default();
+        self.command(Command::Add { client: self.client.clone(), photo: photo.clone(), liked, progress });
     }
 
     /// Copies the image to its own folder first: the desktop keeps reading the
-    /// file, so unliking the photo or clearing the cache must not remove it.
+    /// file, so moving or deleting the original must not remove the wallpaper.
     fn start_apply(&mut self, photo: &Photo) {
         self.applying = true;
         self.status = "Applying wallpaper...".into();
         let tx = self.applied_tx.clone();
         let client = self.client.clone();
         let url = photo.src.original.clone();
-        let liked = self.is_liked(&photo.id).then(|| self.library.image(&photo.id));
+        let local = self.local_file(photo);
         let folder = self.wallpaper_dir.clone();
-        let target = folder.join(format!("{}.jpg", photo.id));
+        self.apply_progress = Arc::default();
+        let progress = self.apply_progress.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let image = match liked {
+                let image = match local {
                     Some(file) => std::fs::read(file).map_err(|e| e.to_string())?,
-                    None => client.download(&url).map_err(|e| e.to_string())?,
+                    None => client.download_tracked(&url, &progress).map_err(|e| e.to_string())?,
                 };
+                // A new name each time: desktops can ignore a change to the same path.
+                let target = folder.join(format!("wall-{}.{}", now(), extension_for(&image)));
                 std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
                 std::fs::write(&target, image).map_err(|e| e.to_string())?;
                 cross_wall_apply::apply(&target)?;
@@ -330,7 +401,8 @@ impl CrossWall {
             };
         }
         while let Ok(update) = self.librarian.updates.try_recv() {
-            self.likes = update.likes;
+            self.snapshot = update.snapshot;
+    
             if let Some(id) = update.finished {
                 self.pending.remove(&id);
             }
@@ -426,7 +498,8 @@ impl CrossWall {
         }
         let photos = self.browse.photos.clone();
         let scroll = egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            self.gallery(ui, &photos);
+            self.shown = photos.clone();
+            self.gallery_rows(ui, &photos);
             if !self.browse.message.is_empty() {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| ui.label(self.browse.message.clone()));
@@ -481,8 +554,7 @@ impl CrossWall {
         }
     }
 
-    fn gallery(&mut self, ui: &mut egui::Ui, photos: &[Photo]) {
-        self.shown = photos.to_vec();
+    fn gallery_rows(&mut self, ui: &mut egui::Ui, photos: &[Photo]) {
         let aspects: Vec<f32> = photos.iter().map(|p| gallery::aspect(p.width, p.height)).collect();
         let width = ui.available_width();
         for row in gallery::rows(&aspects, width, ROW_HEIGHT, TILE_GAP) {
@@ -502,7 +574,13 @@ impl CrossWall {
 
     fn tile(&mut self, ui: &mut egui::Ui, photo: &Photo, rect: egui::Rect) {
         let id = ui.id().with(("tile", &photo.id));
-        let response = ui.interact(rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let local_path = photo.id.strip_prefix("file:").map(String::from);
+        let sense = if local_path.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+        let response = ui.interact(rect, id, sense).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if let Some(path) = &local_path {
+            response.dnd_set_drag_payload(path.clone());
+            response.context_menu(|ui| self.item_menu(ui, path, false));
+        }
         let radius = ui.visuals().widgets.inactive.corner_radius;
         let time = ui.input(|i| i.time) as f32;
         let texture = match self.thumb_slot(photo) {
@@ -526,7 +604,7 @@ impl CrossWall {
         }
         let hovered = ui.rect_contains_pointer(rect);
         let shown = animate_bool_eased(ui.ctx(), id.with("hover"), hovered, easing::cubic_out, 0.16);
-        if self.is_liked(&photo.id) && shown < 0.5 {
+        if self.entry_for(photo).is_some_and(|e| e.info.liked) && shown < 0.5 {
             let badge = rect.right_top() + egui::vec2(-16.0, 16.0);
             ui.painter().circle_filled(badge, 11.0, egui::Color32::from_black_alpha(140));
             ui.painter().text(badge, egui::Align2::CENTER_CENTER, "♥", egui::FontId::proportional(13.0), egui::Color32::WHITE);
@@ -544,7 +622,7 @@ impl CrossWall {
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::from_white_alpha(40);
                 ui.visuals_mut().widgets.hovered.weak_bg_fill = egui::Color32::from_white_alpha(70);
                 let credit = egui::RichText::new(&photo.photographer).small().color(egui::Color32::WHITE);
-                if rect.width() > 230.0 {
+                if rect.width() > 330.0 && !photo.photographer_url.is_empty() {
                     ui.add(egui::Hyperlink::from_label_and_url(credit, &photo.photographer_url).open_in_new_tab(true));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -553,7 +631,7 @@ impl CrossWall {
                     } else if ui.button("Apply").clicked() {
                         self.start_apply(photo);
                     }
-                    self.like_button(ui, photo);
+                    self.keep_buttons(ui, photo);
                 });
             });
         }
@@ -566,9 +644,17 @@ impl CrossWall {
     fn preview_ui(&mut self, ctx: &egui::Context) {
         let opened = animate_bool_eased(ctx, "preview-open", self.preview.is_some(), easing::cubic_out, 0.18);
         let Some(photo) = self.preview.clone() else { return };
-        let (client, url, path) =
-            (self.client.clone(), photo.src.large2x.clone(), self.cache.join(format!("{}-large.jpg", photo.id)));
-        let liked_image = self.is_liked(&photo.id).then(|| self.library.image(&photo.id));
+        let (client, url, path) = (
+            self.client.clone(),
+            photo.src.large2x.clone(),
+            self.cache.join(format!("{}-large.jpg", photo.id.replace(['/', ':'], "_"))),
+        );
+        let local = self.local_file(&photo);
+        if self.preview_progress.0 != photo.id {
+            self.preview_progress = (photo.id.clone(), Arc::default());
+        }
+        let progress = self.preview_progress.1.clone();
+        let worker_progress = progress.clone();
         let screen = ctx.screen_rect();
         let position = self.shown.iter().position(|p| p.id == photo.id);
         let mut step = ctx.input(|i| i32::from(i.key_pressed(egui::Key::ArrowRight)) - i32::from(i.key_pressed(egui::Key::ArrowLeft)));
@@ -579,9 +665,9 @@ impl CrossWall {
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha((242.0 * opened) as u8));
             let stage = egui::Rect::from_min_max(screen.min + egui::vec2(64.0, 20.0), screen.max - egui::vec2(64.0, 76.0));
             let slot = self.images.get(&format!("large/{}", photo.id), || {
-                Box::new(move || match liked_image {
+                Box::new(move || match local {
                     Some(file) => std::fs::read(file).map_err(|e| e.to_string()),
-                    None => images::cached(path, || client.download(&url).map_err(|e| e.to_string())),
+                    None => images::cached(path, || client.download_tracked(&url, &worker_progress).map_err(|e| e.to_string())),
                 })
             });
             let large = match slot {
@@ -592,9 +678,7 @@ impl CrossWall {
                     None
                 }
                 Slot::Loading => {
-                    ui.put(stage, egui::Spinner::new().color(egui::Color32::WHITE).size(32.0));
-                    let below = stage.center() + egui::vec2(0.0, 34.0);
-                    ui.painter().text(below, egui::Align2::CENTER_TOP, "Loading full image", egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE);
+                    open_progress(ui, stage, progress.read());
                     None
                 }
             };
@@ -625,21 +709,27 @@ impl CrossWall {
             let bar = egui::Rect::from_min_max(egui::pos2(screen.left() + 24.0, screen.bottom() - 60.0), screen.right_bottom() - egui::vec2(24.0, 12.0));
             let layout = egui::Layout::left_to_right(egui::Align::Center);
             ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
-                ui.hyperlink_to(egui::RichText::new(&photo.photographer).strong(), &photo.photographer_url);
+                if photo.photographer_url.is_empty() {
+                    ui.strong(&photo.photographer);
+                } else {
+                    ui.hyperlink_to(egui::RichText::new(&photo.photographer).strong(), &photo.photographer_url);
+                }
                 if photo.width > 0 {
                     ui.label(format!("{} × {}", photo.width, photo.height));
                 }
                 if !photo.license.is_empty() {
                     ui.label(&photo.license);
                 }
-                ui.hyperlink_to("View at the source", &photo.url);
+                if !photo.url.is_empty() {
+                    ui.hyperlink_to("View at the source", &photo.url);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.applying {
                         ui.spinner();
                     } else if primary_button(ui, "Apply").clicked() {
                         self.start_apply(&photo);
                     }
-                    self.like_button(ui, &photo);
+                    self.keep_buttons(ui, &photo);
                 });
             });
         });
@@ -656,6 +746,9 @@ impl CrossWall {
     /// Shows the latest message over the window for a few seconds.
     fn toast_ui(&mut self, ctx: &egui::Context) {
         let time = ctx.input(|i| i.time);
+        if self.applying {
+            self.status = progress_text(self.apply_progress.read(), "Applying wallpaper");
+        }
         if self.status != self.toast.0 {
             self.toast = (self.status.clone(), time);
         }
@@ -712,6 +805,40 @@ impl CrossWall {
     }
 }
 
+/// "Saving 12.3 / 45.0 MB", or just the label until any bytes have arrived.
+fn progress_text((done, total): (u64, Option<u64>), label: &str) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let done_mb = done as f64 / MB;
+    match total {
+        Some(total) if done < total => format!("{label} {done_mb:.1} / {:.1} MB", total as f64 / MB),
+        _ if done > 0 => format!("{label} {done_mb:.1} MB"),
+        _ => format!("{label}..."),
+    }
+}
+
+/// What the preview shows while a big image opens: a bar with sizes while it
+/// downloads, then a message while it is decoded, which has no measurable progress.
+fn open_progress(ui: &mut egui::Ui, stage: egui::Rect, (done, total): (u64, Option<u64>)) {
+    let white = egui::Color32::WHITE;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let below = stage.center() + egui::vec2(0.0, 34.0);
+    let fetching = total.is_some_and(|t| done < t);
+    if fetching {
+        let fraction = done as f32 / total.unwrap_or(1).max(1) as f32;
+        let width = stage.width().min(420.0);
+        let track = egui::Rect::from_center_size(stage.center(), egui::vec2(width, 6.0));
+        ui.painter().rect_filled(track, 3.0, egui::Color32::from_white_alpha(50));
+        let mut bar = track;
+        bar.set_width(width * fraction);
+        ui.painter().rect_filled(bar, 3.0, ui.visuals().selection.bg_fill);
+        ui.painter().text(below, egui::Align2::CENTER_TOP, progress_text((done, total), "Downloading"), font, white);
+    } else {
+        ui.put(egui::Rect::from_center_size(stage.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new().color(white).size(32.0));
+        let text = if done > 0 || total.is_some() { "Preparing image" } else { "Opening image" };
+        ui.painter().text(below, egui::Align2::CENTER_TOP, text, font, white);
+    }
+}
+
 /// A titled group of related settings.
 fn card(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
     let visuals = ui.visuals();
@@ -762,6 +889,7 @@ impl App for CrossWall {
         self.images.poll(ctx);
         self.browse.poll(&self.client);
         self.poll_library();
+        self.poll_picked_folder();
         self.poll_updates();
         let nav_fill = ctx.style().visuals.faint_bg_color;
         let nav = egui::Frame::new().fill(nav_fill).inner_margin(10);
@@ -777,17 +905,21 @@ impl App for CrossWall {
             ui.style_mut().spacing.button_padding.y += 4.0;
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                 ui.selectable_value(&mut self.tab, Tab::Browse, "🖼  Browse");
-                ui.selectable_value(&mut self.tab, Tab::Liked, format!("♥  Liked  ·  {}", self.likes.len()));
+                ui.selectable_value(&mut self.tab, Tab::Library, format!("📁  Library  ·  {}", self.snapshot.files.len()));
+                let liked = self.snapshot.files.iter().filter(|e| e.info.liked).count();
+                ui.selectable_value(&mut self.tab, Tab::Liked, format!("♥  Liked  ·  {liked}"));
                 ui.selectable_value(&mut self.tab, Tab::Settings, "⚙  Settings");
             });
         });
         let margin = egui::Frame::central_panel(&ctx.style()).inner_margin(16);
         egui::CentralPanel::default().frame(margin).show(ctx, |ui| match self.tab {
             Tab::Browse => self.browse_ui(ui),
+            Tab::Library => self.library_ui(ui),
             Tab::Liked => self.liked_ui(ui),
             Tab::Settings => self.settings_ui(ui),
         });
         self.preview_ui(ctx);
+        self.dialog_ui(ctx);
         self.toast_ui(ctx);
     }
 

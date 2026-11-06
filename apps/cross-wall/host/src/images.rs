@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 const WORKERS: usize = 6;
-const MAX_TEXTURE: u32 = 1600;
+/// Originals can be 6000 pixels wide, too much memory to keep for a whole library.
+const MAX_THUMBNAIL: u32 = 640;
+const MAX_PREVIEW: u32 = 2560;
 const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 type Bytes = Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>;
@@ -22,6 +24,7 @@ pub struct Images {
     slots: HashMap<String, Slot>,
     jobs: Sender<(String, Bytes)>,
     done: Receiver<(String, Decoded)>,
+    done_tx: Sender<(String, Decoded)>,
     /// Images asked for since the queue was last empty, for the progress bar.
     batch: usize,
 }
@@ -37,18 +40,26 @@ impl Images {
             std::thread::spawn(move || loop {
                 let job = queue.lock().expect("no worker panics holding this lock").recv();
                 let Ok((key, bytes)) = job else { return };
-                if done_tx.send((key, bytes().and_then(|b| decode(&b)))).is_err() {
+                if done_tx.send(load(key, bytes)).is_err() {
                     return;
                 }
             });
         }
-        Self { slots: HashMap::new(), jobs, done, batch: 0 }
+        Self { slots: HashMap::new(), jobs, done, done_tx, batch: 0 }
     }
 
     /// The image under `key`, starting `bytes` on a worker the first time it is asked for.
     pub fn get(&mut self, key: &str, bytes: impl FnOnce() -> Bytes) -> &Slot {
         if !self.slots.contains_key(key) {
-            let _ = self.jobs.send((key.to_string(), bytes()));
+            // A preview the user is waiting for must not queue behind a page of thumbnails.
+            if key.starts_with("large/") {
+                let (done, name, work) = (self.done_tx.clone(), key.to_string(), bytes());
+                std::thread::spawn(move || {
+                    let _ = done.send(load(name, work));
+                });
+            } else {
+                let _ = self.jobs.send((key.to_string(), bytes()));
+            }
             self.slots.insert(key.to_string(), Slot::Loading);
             self.batch += 1;
         }
@@ -82,11 +93,15 @@ impl Images {
     }
 }
 
-fn decode(bytes: &[u8]) -> Decoded {
-    // Originals can be 6000 pixels wide, far more than the screen shows and
-    // too much memory to keep as textures for a whole library.
+fn load(key: String, bytes: Bytes) -> (String, Decoded) {
+    let limit = if key.starts_with("large/") { MAX_PREVIEW } else { MAX_THUMBNAIL };
+    let decoded = bytes().and_then(|b| decode(&b, limit));
+    (key, decoded)
+}
+
+fn decode(bytes: &[u8], limit: u32) -> Decoded {
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
-    let image = if image.width().max(image.height()) > MAX_TEXTURE { image.thumbnail(MAX_TEXTURE, MAX_TEXTURE) } else { image };
+    let image = if image.width().max(image.height()) > limit { image.thumbnail(limit, limit) } else { image };
     let image = image.to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     Ok(egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
@@ -157,7 +172,14 @@ mod tests {
     }
 
     #[test]
+    fn big_images_are_reduced_to_the_limit() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(100, 50).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        assert_eq!(decode(png.get_ref(), 20).unwrap().size, [20, 10]);
+    }
+
+    #[test]
     fn decode_refuses_garbage() {
-        assert!(decode(b"nope").is_err());
+        assert!(decode(b"nope", 100).is_err());
     }
 }

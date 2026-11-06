@@ -6,7 +6,7 @@ struct Canned {
     asked: Mutex<Vec<String>>,
 }
 impl Transport for Canned {
-    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String> {
+    fn get(&self, url: &str, _: &Progress) -> Result<(u16, Vec<u8>), String> {
         self.asked.lock().unwrap().push(url.into());
         self.answer.clone()
     }
@@ -118,6 +118,16 @@ fn likes_stored_with_numeric_ids_still_load() {
     let photo: Photo = serde_json::from_str(r#"{"id":12,"width":1,"height":1,"url":"","photographer":"","photographer_url":"","src":{"original":"","large2x":"","medium":""}}"#).unwrap();
     assert_eq!(photo.id, "12");
     assert_eq!(photo.license, "");
+}
+
+#[test]
+fn progress_reports_bytes_and_an_optional_total() {
+    let progress = Progress::default();
+    assert_eq!(progress.read(), (0, None));
+    progress.set_total(100);
+    progress.advance(30);
+    progress.advance(20);
+    assert_eq!(progress.read(), (50, Some(100)));
 }
 
 #[test]

@@ -1,11 +1,11 @@
 # Setup
 
-### UC-SETUP-02: Choose my sync folder
+### UC-SETUP-02: Choose my wallpaper folder
 
 - **Actor**: Wallpaper user.
-- **Goal**: Share likes with my other computers through a folder a tool such as Syncthing or Dropbox already syncs.
-- **Flow**: Open Settings, enter the folder path, and save.
-- **Success**: Liked photos appear in that folder and likes from other computers appear in the app. With no folder set, likes stay on this computer.
+- **Goal**: Decide where my wallpapers live.
+- **Flow**: Press Choose in Settings or Library and pick a folder.
+- **Success**: Its images and subfolders appear in the Library. Until one is chosen, Browse still works, and Download says to choose one.
 
 ### UC-SETUP-03: Choose light or dark
 
