@@ -3,7 +3,9 @@
 
 mod app;
 mod browse;
+mod chrome;
 mod egui_module;
+mod gallery;
 mod images;
 mod installation;
 mod librarian;

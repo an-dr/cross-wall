@@ -75,6 +75,7 @@ pub fn apply(ctx: &egui::Context, desktop: Desktop, system: System) {
         spacing.button_padding = look.button_padding.into();
         spacing.interact_size.y = look.body + 2.0 * look.button_padding[1];
         spacing.window_margin = Margin::same(16);
+        spacing.scroll = egui::style::ScrollStyle::floating();
         for (text, size, family) in [
             (TextStyle::Small, look.body * 0.85, FontFamily::Proportional),
             (TextStyle::Body, look.body, FontFamily::Proportional),
@@ -283,6 +284,21 @@ fn read_windows() -> System {
 #[cfg(not(windows))]
 fn read_windows() -> System {
     System { dark: false, accent: None }
+}
+
+/// The main display's resolution in physical pixels, once SDL has started.
+pub fn primary_display_size() -> Option<(u32, u32)> {
+    use sdl3::sys::video;
+    // SAFETY: called on the frame thread after the kernel has started SDL's
+    // video system. SDL owns the returned mode, which is read at once and checked for null.
+    unsafe {
+        let mode = video::SDL_GetDesktopDisplayMode(video::SDL_GetPrimaryDisplay());
+        if mode.is_null() {
+            return None;
+        }
+        let density = (*mode).pixel_density.max(1.0);
+        Some((((*mode).w as f32 * density).round() as u32, ((*mode).h as f32 * density).round() as u32))
+    }
 }
 
 /// Physical pixels per point of the focused window, or else the primary display.

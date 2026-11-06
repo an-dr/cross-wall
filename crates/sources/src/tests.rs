@@ -16,7 +16,7 @@ fn client(answer: Result<(u16, Vec<u8>), String>) -> (Client, Arc<Canned>) {
     (Client::with_transport("KEY", canned.clone()), canned)
 }
 fn parsed(source: Source, json: &str) -> Page {
-    client(Ok((200, json.into()))).0.search(source, "x", Orientation::Any, 1).unwrap()
+    client(Ok((200, json.into()))).0.search(source, "x", Orientation::Any, MinSize::ANY, 1).unwrap()
 }
 
 const PEXELS: &str = r##"{"photos":[{"id":7,"width":6000,"height":4000,"url":"https://p/7","photographer":"A B",
@@ -26,7 +26,7 @@ const PEXELS: &str = r##"{"photos":[{"id":7,"width":6000,"height":4000,"url":"ht
 #[test]
 fn pexels_sends_the_key_and_keeps_numeric_ids() {
     let (c, canned) = client(Ok((200, PEXELS.into())));
-    let page = c.search(Source::Pexels, "", Orientation::Any, 2).unwrap();
+    let page = c.search(Source::Pexels, "", Orientation::Any, MinSize::ANY, 2).unwrap();
     assert_eq!(page.photos[0].id, "7");
     assert!(page.has_more);
     let asked = canned.asked.lock().unwrap();
@@ -38,7 +38,7 @@ fn pexels_sends_the_key_and_keeps_numeric_ids() {
 fn keyless_sources_never_receive_the_key() {
     for source in Source::ALL.into_iter().filter(|s| !s.needs_key()) {
         let (c, canned) = client(Ok((200, b"{}".to_vec())));
-        c.search(source, "x", Orientation::Any, 1).unwrap();
+        c.search(source, "x", Orientation::Any, MinSize::ANY, 1).unwrap();
         assert_eq!(canned.asked.lock().unwrap()[0].1, None, "{source:?}");
     }
 }
@@ -46,7 +46,7 @@ fn keyless_sources_never_receive_the_key() {
 #[test]
 fn wallhaven_is_always_safe_for_work_and_encodes_the_query() {
     let (c, canned) = client(Ok((200, b"{}".to_vec())));
-    c.search(Source::Wallhaven, "sea & sky/é", Orientation::Landscape, 1).unwrap();
+    c.search(Source::Wallhaven, "sea & sky/é", Orientation::Landscape, MinSize::ANY, 1).unwrap();
     let url = canned.asked.lock().unwrap()[0].0.clone();
     assert!(url.contains("purity=100") && url.contains("categories=100"), "{url}");
     assert!(url.contains("q=sea%20%26%20sky%2F%C3%A9&"), "{url}");
@@ -114,9 +114,27 @@ fn remote_ids_cannot_escape_a_folder() {
 #[test]
 fn filters_shape_where_the_source_cannot() {
     let json = r#"[{"id":"1","author":"a","width":100,"height":50,"url":"u","download_url":"d"},{"id":"2","author":"a","width":50,"height":100,"url":"u","download_url":"d"}]"#;
-    let page = client(Ok((200, json.into()))).0.search(Source::Picsum, "", Orientation::Portrait, 1).unwrap();
+    let page = client(Ok((200, json.into()))).0.search(Source::Picsum, "", Orientation::Portrait, MinSize::ANY, 1).unwrap();
     assert_eq!(page.photos.len(), 1);
     assert_eq!(page.photos[0].id, "picsum-2");
+}
+
+#[test]
+fn minimum_size_reaches_the_server_and_is_enforced_here() {
+    let (c, canned) = client(Ok((200, b"{}".to_vec())));
+    c.search(Source::Wallhaven, "", Orientation::Any, MinSize { width: 2560, height: 1440 }, 1).unwrap();
+    assert!(canned.asked.lock().unwrap()[0].0.contains("&atleast=2560x1440&"));
+    let json = r#"[{"id":"1","author":"a","width":1920,"height":1080,"url":"u","download_url":"d"},{"id":"2","author":"a","width":3840,"height":2160,"url":"u","download_url":"d"}]"#;
+    let page = client(Ok((200, json.into()))).0.search(Source::Picsum, "", Orientation::Any, MinSize { width: 2560, height: 1440 }, 1).unwrap();
+    assert_eq!(page.photos.len(), 1);
+    assert_eq!(page.photos[0].id, "picsum-2");
+}
+
+#[test]
+fn portrait_searches_turn_the_minimum() {
+    let (c, canned) = client(Ok((200, b"{}".to_vec())));
+    c.search(Source::Wallhaven, "", Orientation::Portrait, MinSize { width: 2560, height: 1440 }, 1).unwrap();
+    assert!(canned.asked.lock().unwrap()[0].0.contains("&atleast=1440x2560&"));
 }
 
 #[test]
@@ -135,7 +153,7 @@ fn download_does_not_send_the_key() {
 
 #[test]
 fn maps_failures() {
-    let search = |c: Client| c.search(Source::Openverse, "x", Orientation::Any, 1);
+    let search = |c: Client| c.search(Source::Openverse, "x", Orientation::Any, MinSize::ANY, 1);
     for (status, expected) in [(401, Error::BadKey), (429, Error::RateLimited), (500, Error::Status(500))] {
         assert_eq!(search(client(Ok((status, vec![]))).0).unwrap_err(), expected);
     }
@@ -149,7 +167,7 @@ fn maps_failures() {
 fn live_keyless_sources_answer_and_their_images_download() {
     let client = Client::new("");
     for source in Source::ALL.into_iter().filter(|s| !s.needs_key()) {
-        let page = client.search(source, "mountain", Orientation::Any, 1).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        let page = client.search(source, "mountain", Orientation::Any, MinSize::ANY, 1).unwrap_or_else(|e| panic!("{source:?}: {e}"));
         let photo = page.photos.first().unwrap_or_else(|| panic!("{source:?}: no photos"));
         println!("{source:?}: {} photos, more={}, {} x {}, by {}, {}", page.photos.len(), page.has_more, photo.width, photo.height, photo.photographer, photo.license);
         let thumbnail = client.download_thumbnail(photo).unwrap_or_else(|e| panic!("{source:?} thumbnail: {e}"));

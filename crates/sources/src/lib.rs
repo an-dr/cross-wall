@@ -117,6 +117,31 @@ impl Orientation {
     }
 }
 
+/// The smallest photo to show. Zero means any size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MinSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl MinSize {
+    pub const ANY: MinSize = MinSize { width: 0, height: 0 };
+
+    /// A portrait search for a landscape screen's size wants the same size turned.
+    pub fn turned_for(self, orientation: Orientation) -> MinSize {
+        if orientation == Orientation::Portrait {
+            MinSize { width: self.width.min(self.height), height: self.width.max(self.height) }
+        } else {
+            self
+        }
+    }
+
+    /// An unknown size is kept: some sources do not report one.
+    fn accepts(self, width: u32, height: u32) -> bool {
+        width == 0 || height == 0 || (width >= self.width && height >= self.height)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     BadKey,
@@ -197,12 +222,14 @@ impl Client {
     }
 
     /// One page of results. An empty query means the source's own selection.
-    pub fn search(&self, source: Source, query: &str, orientation: Orientation, page: u32) -> Result<Page, Error> {
-        let url = providers::url(source, query, orientation, page);
+    pub fn search(&self, source: Source, query: &str, orientation: Orientation, min: MinSize, page: u32) -> Result<Page, Error> {
+        let min = min.turned_for(orientation);
+        let url = providers::url(source, query, orientation, min, page);
         let key = source.needs_key().then_some(self.key.as_str());
         let body = check(self.transport.get(&url, key))?;
         let mut result = providers::parse(source, &body)?;
-        result.photos.retain(|p| orientation.accepts(p.width, p.height));
+        // Several sources cannot filter by size or shape, so every answer is checked here.
+        result.photos.retain(|p| orientation.accepts(p.width, p.height) && min.accepts(p.width, p.height));
         Ok(result)
     }
 

@@ -24,4 +24,4 @@ The interface is drawn by egui, so it resembles each desktop without using its r
 | GNOME | `font-name` | `color-scheme` | `accent-color` |
 | COSMIC | Open Sans | `is_dark` | COSMIC's standard accent, not the user's choice |
 
-Spacing and corners follow each desktop's usual proportions. Any desktop not listed uses the GNOME look. On Wayland the compositor scales the window, which can look slightly soft on a high-DPI screen. Interface zoom in Settings adjusts the result on any desktop.
+The system frame is replaced by the app's own title bar. Moving, resizing, and double-clicking it still go through the window manager, and if the desktop refuses, the system frame stays. Spacing and corners follow each desktop's usual proportions. Any desktop not listed uses the GNOME look. On Wayland the compositor scales the window, which can look slightly soft on a high-DPI screen. Interface zoom in Settings adjusts the result on any desktop.

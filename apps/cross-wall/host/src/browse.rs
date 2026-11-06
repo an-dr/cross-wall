@@ -2,10 +2,15 @@
 //! replaced query harmless, because network replies arrive in any order.
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use cross_wall_sources::{Client, Error, Orientation, Page, Photo, Source};
+use cross_wall_sources::{Client, Error, MinSize, Orientation, Page, Photo, Source};
+
+/// Consecutive pages to read past when the app's own size check empties them,
+/// so a source that cannot filter does not stop at a blank screen.
+const MAX_EMPTY_PAGES: u32 = 5;
 
 #[derive(Clone, PartialEq, Default)]
 struct Query {
+    min: MinSize,
     source: Source,
     text: String,
     orientation: Orientation,
@@ -15,6 +20,9 @@ pub struct Browse {
     pub source: Source,
     pub text: String,
     pub orientation: Orientation,
+    pub min: MinSize,
+    empty_pages: u32,
+    read_on: bool,
     query: Query,
     pub photos: Vec<Photo>,
     page: u32,
@@ -34,6 +42,9 @@ impl Browse {
             source: Source::default(),
             text: String::new(),
             orientation: Orientation::Any,
+            min: MinSize::ANY,
+            empty_pages: 0,
+            read_on: false,
             query: Query::default(),
             photos: Vec::new(),
             page: 0,
@@ -57,8 +68,9 @@ impl Browse {
     pub fn search(&mut self, client: &Client) {
         self.started = true;
         self.generation += 1;
-        self.query = Query { source: self.source, text: self.text.trim().to_string(), orientation: self.orientation };
+        self.query = Query { min: self.min, source: self.source, text: self.text.trim().to_string(), orientation: self.orientation };
         self.photos.clear();
+        self.empty_pages = 0;
         self.page = 0;
         self.has_more = false;
         self.message.clear();
@@ -70,14 +82,17 @@ impl Browse {
         let (tx, generation, query, page) = (self.tx.clone(), self.generation, self.query.clone(), self.page + 1);
         let client = client.clone();
         std::thread::spawn(move || {
-            let answer = client.search(query.source, &query.text, query.orientation, page);
+            let answer = client.search(query.source, &query.text, query.orientation, query.min, page);
             let _ = tx.send((generation, answer));
         });
     }
 
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self, client: &Client) {
         while let Ok((generation, answer)) = self.rx.try_recv() {
             self.receive(generation, answer);
+        }
+        if std::mem::take(&mut self.read_on) {
+            self.load_more(client);
         }
     }
 
@@ -90,9 +105,16 @@ impl Browse {
             Ok(page) => {
                 self.page += 1;
                 self.has_more = page.has_more;
+                let added = page.photos.len();
                 self.photos.extend(page.photos);
-                if self.photos.is_empty() {
-                    self.message = "No photos found.".into();
+                self.empty_pages = if added == 0 { self.empty_pages + 1 } else { 0 };
+                self.read_on = added == 0 && self.has_more && self.empty_pages < MAX_EMPTY_PAGES;
+                if self.photos.is_empty() && !self.read_on {
+                    self.message = if self.has_more {
+                        "Nothing at this size so far. Load more, or lower the minimum resolution.".into()
+                    } else {
+                        "No photos found. Try another source or a lower minimum resolution.".into()
+                    };
                 }
             }
             Err(error) => self.message = error.to_string(),
@@ -145,6 +167,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_pages_read_on_up_to_a_limit() {
+        let mut b = Browse::new();
+        for _ in 0..MAX_EMPTY_PAGES - 1 {
+            b.receive(0, page(&[], true));
+            assert!(std::mem::take(&mut b.read_on));
+        }
+        b.receive(0, page(&[], true));
+        assert!(!b.read_on);
+        assert!(b.message.contains("minimum resolution"));
+    }
+
+    #[test]
     fn answers_to_a_replaced_query_are_ignored() {
         let mut b = Browse::new();
         b.generation = 2;
@@ -157,7 +191,7 @@ mod tests {
     fn empty_results_and_errors_become_messages() {
         let mut b = Browse::new();
         b.receive(0, page(&[], false));
-        assert_eq!(b.message, "No photos found.");
+        assert!(b.message.starts_with("No photos found."));
         b.receive(0, Err(Error::RateLimited));
         assert!(b.message.contains("rate limit"));
     }

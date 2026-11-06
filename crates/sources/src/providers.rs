@@ -3,13 +3,13 @@
 //! that existing likes were stored under.
 use serde_json::Value;
 
-use crate::{Error, Orientation, Page, Photo, Source, Sources};
+use crate::{Error, MinSize, Orientation, Page, Photo, Source, Sources};
 
 pub const PER_PAGE: u32 = 30;
 /// Openverse caps anonymous requests at 20 results per page.
 const OPENVERSE_PER_PAGE: u32 = 20;
 
-pub fn url(source: Source, query: &str, orientation: Orientation, page: u32) -> String {
+pub fn url(source: Source, query: &str, orientation: Orientation, min: MinSize, page: u32) -> String {
     let q = encode(query.trim());
     let empty = query.trim().is_empty();
     match source {
@@ -33,7 +33,8 @@ pub fn url(source: Source, query: &str, orientation: Orientation, page: u32) -> 
                 Orientation::Portrait => "&ratios=portrait",
                 Orientation::Square => "&ratios=1x1",
             };
-            format!("https://wallhaven.cc/api/v1/search?q={q}&categories=100&purity=100&atleast=1920x1080&sorting={sorting}&page={page}{shape}")
+            let atleast = if min == MinSize::ANY { String::new() } else { format!("&atleast={}x{}", min.width, min.height) };
+            format!("https://wallhaven.cc/api/v1/search?q={q}&categories=100&purity=100{atleast}&sorting={sorting}&page={page}{shape}")
         }
         Source::Openverse => {
             let q = if empty { encode("landscape wallpaper") } else { q };
@@ -47,7 +48,14 @@ pub fn url(source: Source, query: &str, orientation: Orientation, page: u32) -> 
         }
         Source::Commons => {
             let term = if empty { "landscape".to_string() } else { query.trim().to_string() };
-            let search = encode(&format!("{term} filew:>1920 filetype:bitmap"));
+            let mut filters = String::from("filetype:bitmap");
+            if min.width > 0 {
+                filters.push_str(&format!(" filew:>{}", min.width - 1));
+            }
+            if min.height > 0 {
+                filters.push_str(&format!(" fileh:>{}", min.height - 1));
+            }
+            let search = encode(&format!("{term} {filters}"));
             let offset = (page.saturating_sub(1)) * PER_PAGE;
             format!("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrsearch={search}&gsrlimit={PER_PAGE}&gsroffset={offset}&prop=imageinfo&iiprop=url%7Csize%7Cextmetadata&iiurlwidth=640")
         }

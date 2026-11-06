@@ -7,18 +7,24 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use bones_kernel::messages::upgrader::Action;
 use cross_wall_apply::Desktop;
 use cross_wall_library::{Library, Like};
-use cross_wall_sources::{Client, Orientation, Photo, Source};
+use cross_wall_sources::{Client, MinSize, Orientation, Photo, Source};
+
+use egui_animation::{animate_bool_eased, easing};
 
 use crate::browse::Browse;
+use crate::chrome;
 use crate::egui_module::App;
+use crate::gallery;
 use crate::images::{self, Images, Slot};
 use crate::installation::{self, UpdateState};
 use crate::librarian::{Command, Librarian};
 use crate::settings::Settings;
 use crate::theme::{self, System};
 
-const THUMB_WIDTH: f32 = 260.0;
-const THUMB_GAP: f32 = 12.0;
+const ROW_HEIGHT: f32 = 210.0;
+const TILE_GAP: f32 = 8.0;
+const TOAST_SECONDS: f64 = 8.0;
+const RESOLUTIONS: [(u32, u32); 5] = [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (5120, 2880)];
 const THEME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 const SCALE_POLL: f64 = 1.0;
 
@@ -65,6 +71,11 @@ pub struct CrossWall {
     styled: bool,
     display_scale: f32,
     scale_checked_at: f64,
+    display_size: Option<(u32, u32)>,
+    /// The photos last shown, which the preview steps through.
+    shown: Vec<Photo>,
+    toast: (String, f64),
+    custom_frame: bool,
 }
 
 impl CrossWall {
@@ -99,6 +110,10 @@ impl CrossWall {
             styled: false,
             display_scale: 1.0,
             scale_checked_at: f64::NEG_INFINITY,
+            display_size: None,
+            shown: Vec::new(),
+            toast: (String::new(), 0.0),
+            custom_frame: false,
             update_requests,
             update_results,
             update_available: None,
@@ -144,6 +159,7 @@ impl CrossWall {
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.set_max_width(ui.available_width().min(680.0));
             ui.heading("Settings");
             card(ui, "Pexels (optional)", |ui| {
                 ui.label("API key. The other photo sources need none.");
@@ -245,11 +261,11 @@ impl CrossWall {
 
     fn liked_ui(&mut self, ui: &mut egui::Ui) {
         if self.likes.is_empty() {
-            ui.label("Photos you like appear here.");
+            empty_state(ui, "♥", "Nothing liked yet", "Photos you like are kept here and work offline.");
             return;
         }
         let photos: Vec<Photo> = self.likes.iter().map(|like| like.photo.clone()).collect();
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.grid(ui, &photos));
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.gallery(ui, &photos));
     }
 
     fn like_button(&mut self, ui: &mut egui::Ui, photo: &Photo) {
@@ -317,52 +333,103 @@ impl CrossWall {
         }
     }
 
+    fn effective_min(&self) -> MinSize {
+        let size = match self.settings.min_resolution {
+            Some([width, height]) => (width, height),
+            None => self.display_size.unwrap_or((0, 0)),
+        };
+        MinSize { width: size.0, height: size.1 }
+    }
+
+    fn resolution_label(&self) -> String {
+        match (self.settings.min_resolution, self.display_size) {
+            (None, Some((w, h))) => format!("≥ {w} × {h}"),
+            (None, None) | (Some([0, 0]), _) => "Any size".to_string(),
+            (Some([w, h]), _) => format!("≥ {w} × {h}"),
+        }
+    }
+
+    /// The minimum-resolution menu. Says whether the choice changed.
+    fn resolution_menu(&mut self, ui: &mut egui::Ui) -> bool {
+        let before = self.settings.min_resolution;
+        let mut chosen = before;
+        let display = self.display_size.map_or("Main display".to_string(), |(w, h)| format!("Main display ({w} × {h})"));
+        egui::ComboBox::from_id_salt("min-resolution").selected_text(self.resolution_label()).width(150.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, None, display);
+            ui.selectable_value(&mut chosen, Some([0, 0]), "Any size");
+            for (w, h) in RESOLUTIONS {
+                ui.selectable_value(&mut chosen, Some([w, h]), format!("{w} × {h}"));
+            }
+        });
+        if chosen == before {
+            return false;
+        }
+        self.settings.min_resolution = chosen;
+        self.draft.min_resolution = chosen;
+        self.browse.min = self.effective_min();
+        if let Err(error) = self.settings.save(&self.settings_path) {
+            self.status = format!("Could not save settings: {error}");
+        }
+        true
+    }
+
     fn browse_ui(&mut self, ui: &mut egui::Ui) {
-        let locked = self.browse.source.needs_key() && self.settings.pexels_key.is_empty();
-        if !locked {
+        let locked = |app: &Self| app.browse.source.needs_key() && app.settings.pexels_key.is_empty();
+        if !locked(self) {
             self.browse.start_once(&self.client);
         }
-        let mut source_changed = false;
-        ui.horizontal(|ui| {
+        let mut refresh = false;
+        ui.horizontal_wrapped(|ui| {
+            let searchable = self.browse.source.has_search();
+            let hint = if searchable { "Search wallpapers, then press Enter" } else { "This source has no search" };
+            let edit = egui::TextEdit::singleline(&mut self.browse.text)
+                .hint_text(hint)
+                .margin(egui::Margin::symmetric(10, 5))
+                .desired_width((ui.available_width() - 450.0).max(130.0));
+            let edit = ui.add_enabled(searchable, edit);
+            refresh |= edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             egui::ComboBox::from_id_salt("source").selected_text(self.browse.source.name()).show_ui(ui, |ui| {
                 for source in Source::ALL {
-                    source_changed |= ui.selectable_value(&mut self.browse.source, source, source.name()).changed();
+                    refresh |= ui.selectable_value(&mut self.browse.source, source, source.name()).changed();
                 }
             });
-            let reserved = 300.0;
-            let width = (ui.available_width() - reserved).max(120.0);
-            let searchable = self.browse.source.has_search();
-            let hint = if searchable { "Search photos" } else { "This source has no search" };
-            let edit = ui.add_enabled(searchable, egui::TextEdit::singleline(&mut self.browse.text).hint_text(hint).desired_width(width));
-            let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             egui::ComboBox::from_id_salt("orientation")
                 .selected_text(orientation_name(self.browse.orientation))
                 .show_ui(ui, |ui| {
                     for o in [Orientation::Any, Orientation::Landscape, Orientation::Portrait, Orientation::Square] {
-                        ui.selectable_value(&mut self.browse.orientation, o, orientation_name(o));
+                        refresh |= ui.selectable_value(&mut self.browse.orientation, o, orientation_name(o)).changed();
                     }
                 });
-            let locked = self.browse.source.needs_key() && self.settings.pexels_key.is_empty();
-            if primary_button(ui, "Search").clicked() || entered || source_changed {
-                self.images.forget("thumb/");
-                if locked {
-                    self.browse.clear();
-                } else {
-                    self.browse.search(&self.client);
-                }
-            }
+            refresh |= self.resolution_menu(ui);
         });
-        if self.browse.source.needs_key() && self.settings.pexels_key.is_empty() {
-            ui.label("Pexels needs a free API key. Enter one in Settings, or pick another source.");
+        ui.add_space(6.0);
+        if refresh {
+            self.images.forget("thumb/");
+            if locked(self) {
+                self.browse.clear();
+            } else {
+                self.browse.search(&self.client);
+            }
+        }
+        if locked(self) {
+            empty_state(ui, "🔑", "Pexels needs a free API key", "Enter one in Settings, or pick another source.");
             return;
         }
-        if !self.browse.message.is_empty() {
-            ui.label(self.browse.message.clone());
+        if self.browse.photos.is_empty() && !self.browse.message.is_empty() {
+            let message = self.browse.message.clone();
+            empty_state(ui, "🖼", "No wallpapers to show", &message);
+            if self.browse.has_more && centered_button(ui, "Load more") {
+                self.browse.load_more(&self.client);
+            }
+            return;
         }
         let photos = self.browse.photos.clone();
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            self.grid(ui, &photos);
-            ui.add_space(4.0);
+            if !self.browse.message.is_empty() {
+                ui.label(self.browse.message.clone());
+            }
+            self.gallery(ui, &photos);
+            ui.add_space(8.0);
             ui.vertical_centered(|ui| {
                 if self.browse.loading {
                     ui.spinner();
@@ -372,125 +439,216 @@ impl CrossWall {
                 ui.add_space(4.0);
                 let source = self.browse.source;
                 ui.hyperlink_to(egui::RichText::new(format!("Photos provided by {}", source.name())).small(), source.home());
+                ui.add_space(8.0);
             });
         });
     }
 
-    fn grid(&mut self, ui: &mut egui::Ui, photos: &[Photo]) {
-        let available = ui.available_width();
-        let columns = (((available + THUMB_GAP) / (THUMB_WIDTH + THUMB_GAP)) as usize).max(1);
-        let width = (available - THUMB_GAP * (columns - 1) as f32) / columns as f32;
-        let size = egui::vec2(width, (width * 0.625).round());
-        for row in photos.chunks(columns) {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = THUMB_GAP;
-                for photo in row {
-                    ui.vertical(|ui| {
-                        ui.set_width(width);
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        if self.thumbnail(ui, photo, size) {
-                            self.preview = Some(photo.clone());
-                        }
-                        ui.add(egui::Hyperlink::from_label_and_url(
-                            egui::RichText::new(&photo.photographer).small(),
-                            &photo.photographer_url,
-                        ));
-                    });
+    fn gallery(&mut self, ui: &mut egui::Ui, photos: &[Photo]) {
+        self.shown = photos.to_vec();
+        let aspects: Vec<f32> = photos.iter().map(|p| gallery::aspect(p.width, p.height)).collect();
+        let width = ui.available_width();
+        for row in gallery::rows(&aspects, width, ROW_HEIGHT, TILE_GAP) {
+            let (row_rect, _) = ui.allocate_exact_size(egui::vec2(width, row.height), egui::Sense::hover());
+            // Off-screen rows request nothing, so scrolling is what loads images.
+            if ui.is_rect_visible(row_rect) {
+                let mut x = row_rect.left();
+                for (index, tile_width) in row.tiles {
+                    let rect = egui::Rect::from_min_size(egui::pos2(x, row_rect.top()), egui::vec2(tile_width, row.height));
+                    self.tile(ui, &photos[index], rect);
+                    x += tile_width + TILE_GAP;
                 }
-            });
-            ui.add_space(THUMB_GAP / 2.0);
+            }
+            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
         }
     }
 
-    /// Draws one thumbnail and says whether it was clicked.
-    fn thumbnail(&mut self, ui: &mut egui::Ui, photo: &Photo, size: egui::Vec2) -> bool {
+    fn tile(&mut self, ui: &mut egui::Ui, photo: &Photo, rect: egui::Rect) {
+        let id = ui.id().with(("tile", &photo.id));
+        let response = ui.interact(rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         let radius = ui.visuals().widgets.inactive.corner_radius;
-        let placeholder = ui.visuals().faint_bg_color;
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-        ui.painter().rect_filled(rect, radius, placeholder);
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-        let centre = egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0));
-        match self.thumb_slot(photo) {
-            Slot::Ready(texture) => {
-                let uv = images::cover_uv(texture.size(), size);
-                let image = egui::Image::new(texture).uv(uv).corner_radius(radius).maintain_aspect_ratio(false);
-                ui.put(rect, image.fit_to_exact_size(size));
+        let time = ui.input(|i| i.time) as f32;
+        let texture = match self.thumb_slot(photo) {
+            Slot::Ready(texture) => Some(texture.clone()),
+            _ => None,
+        };
+        match texture {
+            Some(texture) => {
+                let uv = images::cover_uv(texture.size(), rect.size());
+                let appear = animate_bool_eased(ui.ctx(), id.with("appear"), true, easing::cubic_out, 0.25);
+                ui.painter().rect_filled(rect, radius, ui.visuals().faint_bg_color);
+                let tint = egui::Color32::WHITE.gamma_multiply(appear);
+                egui::Image::new(&texture).uv(uv).tint(tint).corner_radius(radius).maintain_aspect_ratio(false).paint_at(ui, rect);
             }
-            Slot::Loading => {
-                ui.put(centre, egui::Spinner::new());
-            }
-            Slot::Failed(error) => {
-                let error = error.clone();
-                ui.put(rect.shrink(8.0), egui::Label::new(egui::RichText::new(error).small()));
+            None => {
+                // A soft pulse while the photo loads, rather than a row of spinners.
+                let base = ui.visuals().faint_bg_color;
+                let pulse = 0.65 + 0.35 * (time * 2.5).sin().abs();
+                ui.painter().rect_filled(rect, radius, base.gamma_multiply(pulse));
             }
         }
-        if response.hovered() {
-            let stroke = egui::Stroke::new(2.0, ui.visuals().selection.bg_fill);
-            ui.painter().rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
+        let hovered = ui.rect_contains_pointer(rect);
+        let shown = animate_bool_eased(ui.ctx(), id.with("hover"), hovered, easing::cubic_out, 0.16);
+        if self.is_liked(&photo.id) && shown < 0.5 {
+            let badge = rect.right_top() + egui::vec2(-16.0, 16.0);
+            ui.painter().circle_filled(badge, 11.0, egui::Color32::from_black_alpha(140));
+            ui.painter().text(badge, egui::Align2::CENTER_CENTER, "♥", egui::FontId::proportional(13.0), egui::Color32::WHITE);
         }
-        response.clicked()
+        if shown > 0.0 {
+            let bar = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 40.0), rect.right_bottom());
+            let bar_radius = egui::CornerRadius { nw: 0, ne: 0, sw: radius.sw, se: radius.se };
+            ui.painter().rect_filled(bar, bar_radius, egui::Color32::from_black_alpha((170.0 * shown) as u8));
+        }
+        if shown > 0.5 {
+            let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.bottom() - 40.0), rect.right_bottom() - egui::vec2(8.0, 0.0));
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().id_salt(("tile-bar", &photo.id)).max_rect(bar).layout(layout), |ui| {
+                ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::from_white_alpha(40);
+                ui.visuals_mut().widgets.hovered.weak_bg_fill = egui::Color32::from_white_alpha(70);
+                let credit = egui::RichText::new(&photo.photographer).small().color(egui::Color32::WHITE);
+                if rect.width() > 230.0 {
+                    ui.add(egui::Hyperlink::from_label_and_url(credit, &photo.photographer_url).open_in_new_tab(true));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.applying {
+                        ui.spinner();
+                    } else if ui.button("Apply").clicked() {
+                        self.start_apply(photo);
+                    }
+                    self.like_button(ui, photo);
+                });
+            });
+        }
+        if response.clicked() {
+            self.preview = Some(photo.clone());
+        }
     }
 
+    /// A full-window view that steps through the photos with the arrow keys.
     fn preview_ui(&mut self, ctx: &egui::Context) {
+        let opened = animate_bool_eased(ctx, "preview-open", self.preview.is_some(), easing::cubic_out, 0.18);
         let Some(photo) = self.preview.clone() else { return };
         let (client, url, path) =
             (self.client.clone(), photo.src.large2x.clone(), self.cache.join(format!("{}-large.jpg", photo.id)));
         let liked_image = self.is_liked(&photo.id).then(|| self.library.image(&photo.id));
-        let screen = ctx.screen_rect().size();
-        let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("preview")).show(ctx, |ui| {
+        let screen = ctx.screen_rect();
+        let position = self.shown.iter().position(|p| p.id == photo.id);
+        let mut step = ctx.input(|i| i32::from(i.key_pressed(egui::Key::ArrowRight)) - i32::from(i.key_pressed(egui::Key::ArrowLeft)));
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        egui::Area::new(egui::Id::new("preview")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            // Takes the pointer, so nothing behind the preview reacts.
+            ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha((242.0 * opened) as u8));
+            let stage = egui::Rect::from_min_max(screen.min + egui::vec2(64.0, 20.0), screen.max - egui::vec2(64.0, 76.0));
             let slot = self.images.get(&format!("large/{}", photo.id), || {
                 Box::new(move || match liked_image {
                     Some(file) => std::fs::read(file).map_err(|e| e.to_string()),
                     None => images::cached(path, || client.download(&url).map_err(|e| e.to_string())),
                 })
             });
-            match slot {
-                Slot::Ready(texture) => {
-                    let size = texture.size_vec2();
-                    let fit = (screen.x * 0.8 / size.x).min(screen.y * 0.7 / size.y).min(1.0);
-                    let radius = ui.visuals().widgets.inactive.corner_radius;
-                    ui.add(egui::Image::new(texture).corner_radius(radius).fit_to_exact_size(size * fit));
+            let large = match slot {
+                Slot::Ready(texture) => Some(texture.clone()),
+                Slot::Failed(error) => {
+                    let error = error.clone();
+                    ui.put(stage, egui::Label::new(egui::RichText::new(error).color(egui::Color32::WHITE)));
+                    None
                 }
                 Slot::Loading => {
-                    ui.add_sized([screen.x * 0.5, screen.y * 0.5], egui::Spinner::new());
+                    ui.put(stage, egui::Spinner::new().color(egui::Color32::WHITE).size(32.0));
+                    None
                 }
-                Slot::Failed(error) => {
-                    ui.label(error.clone());
-                }
+            };
+            if let Some(texture) = large {
+                let size = texture.size_vec2();
+                let fit = (stage.width() / size.x).min(stage.height() / size.y);
+                let rect = egui::Rect::from_center_size(stage.center(), size * fit);
+                let radius = ui.visuals().widgets.inactive.corner_radius;
+                let tint = egui::Color32::WHITE.gamma_multiply(opened);
+                egui::Image::new(&texture).tint(tint).corner_radius(radius).maintain_aspect_ratio(false).paint_at(ui, rect);
             }
-            ui.horizontal(|ui| {
-                ui.label("Photo by");
-                ui.hyperlink_to(&photo.photographer, &photo.photographer_url);
+            let visuals = ui.visuals_mut();
+            visuals.override_text_color = Some(egui::Color32::WHITE);
+            visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_white_alpha(30);
+            visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_white_alpha(60);
+            visuals.widgets.active.weak_bg_fill = egui::Color32::from_white_alpha(80);
+            let round = |ui: &mut egui::Ui, centre: egui::Pos2, text: &str| {
+                let rect = egui::Rect::from_center_size(centre, egui::vec2(38.0, 38.0));
+                ui.put(rect, egui::Button::new(egui::RichText::new(text).size(18.0)).corner_radius(19)).clicked()
+            };
+            close |= round(ui, screen.right_top() + egui::vec2(-32.0, 32.0), "×");
+            if position.is_some_and(|p| p > 0) && round(ui, egui::pos2(screen.left() + 32.0, stage.center().y), "‹") {
+                step = -1;
+            }
+            if position.is_some_and(|p| p + 1 < self.shown.len()) && round(ui, egui::pos2(screen.right() - 32.0, stage.center().y), "›") {
+                step = 1;
+            }
+            let bar = egui::Rect::from_min_max(egui::pos2(screen.left() + 24.0, screen.bottom() - 60.0), screen.right_bottom() - egui::vec2(24.0, 12.0));
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
+                ui.hyperlink_to(egui::RichText::new(&photo.photographer).strong(), &photo.photographer_url);
                 if photo.width > 0 {
-                    ui.weak(format!("{} x {}", photo.width, photo.height));
+                    ui.label(format!("{} × {}", photo.width, photo.height));
                 }
                 if !photo.license.is_empty() {
-                    ui.weak(&photo.license);
+                    ui.label(&photo.license);
                 }
                 ui.hyperlink_to("View at the source", &photo.url);
-            });
-            ui.horizontal(|ui| {
-                self.like_button(ui, &photo);
-                if self.applying {
-                    ui.spinner();
-                } else if primary_button(ui, "Apply").clicked() {
-                    self.start_apply(&photo);
-                }
-                close = ui.button("Close").clicked();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.applying {
+                        ui.spinner();
+                    } else if primary_button(ui, "Apply").clicked() {
+                        self.start_apply(&photo);
+                    }
+                    self.like_button(ui, &photo);
+                });
             });
         });
-        if close || modal.should_close() {
-            self.preview = None;
+        let next = position
+            .and_then(|p| p.checked_add_signed(step as isize))
+            .filter(|_| step != 0)
+            .and_then(|p| self.shown.get(p).cloned());
+        if close || next.is_some() {
+            self.preview = next;
             self.images.forget(&format!("large/{}", photo.id));
         }
     }
 
+    /// Shows the latest message over the window for a few seconds.
+    fn toast_ui(&mut self, ctx: &egui::Context) {
+        let time = ctx.input(|i| i.time);
+        if self.status != self.toast.0 {
+            self.toast = (self.status.clone(), time);
+        }
+        if self.status.is_empty() {
+            return;
+        }
+        if time - self.toast.1 > TOAST_SECONDS {
+            self.status.clear();
+            return;
+        }
+        egui::Area::new(egui::Id::new("toast"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(10).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(&self.status);
+                        if ui.small_button("×").clicked() {
+                            self.status.clear();
+                        }
+                    });
+                });
+            });
+    }
     /// Follows mode, accent, and display changes while the app runs.
     fn follow_system(&mut self, ctx: &egui::Context) {
         if !self.styled {
             self.styled = true;
             theme::apply(ctx, self.desktop, self.system);
+            self.display_size = theme::primary_display_size();
+            self.custom_frame = chrome::install();
+            self.browse.min = self.effective_min();
             let (ctx, desktop) = (ctx.clone(), self.desktop);
             // The font lookup can start a process, so it stays off the frame thread.
             std::thread::spawn(move || theme::install_font(&ctx, desktop));
@@ -505,6 +663,7 @@ impl CrossWall {
         if time - self.scale_checked_at >= SCALE_POLL {
             self.scale_checked_at = time;
             self.display_scale = theme::display_scale();
+            chrome::publish_scale(self.scale());
         }
     }
 }
@@ -521,6 +680,21 @@ fn card(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
         ui.strong(title);
         content(ui);
     });
+}
+
+/// A centred icon and message where a screen has nothing to show.
+fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, detail: &str) {
+    ui.add_space((ui.available_height() * 0.28).max(16.0));
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new(icon).size(44.0).weak());
+        ui.add_space(6.0);
+        ui.heading(title);
+        ui.weak(detail);
+    });
+}
+
+fn centered_button(ui: &mut egui::Ui, text: &str) -> bool {
+    ui.vertical_centered(|ui| ui.button(text).clicked()).inner
 }
 
 /// The screen's main action, in the system accent colour.
@@ -542,31 +716,27 @@ impl App for CrossWall {
     fn ui(&mut self, ctx: &egui::Context) {
         self.follow_system(ctx);
         self.images.poll(ctx);
-        self.browse.poll();
+        self.browse.poll(&self.client);
         self.poll_library();
         self.poll_updates();
-        egui::SidePanel::left("navigation").resizable(false).exact_width(170.0).show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.style_mut().spacing.button_padding.y += 3.0;
+        let nav_fill = ctx.style().visuals.faint_bg_color;
+        let nav = egui::Frame::new().fill(nav_fill).inner_margin(10);
+        if self.custom_frame {
+            egui::TopBottomPanel::top("title-bar")
+                .exact_height(chrome::TITLE_HEIGHT)
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(nav_fill))
+                .show(ctx, chrome::title_bar);
+        }
+        egui::SidePanel::left("navigation").resizable(false).show_separator_line(false).exact_width(180.0).frame(nav).show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.style_mut().spacing.button_padding.y += 4.0;
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                ui.selectable_value(&mut self.tab, Tab::Browse, "Browse");
-                ui.selectable_value(&mut self.tab, Tab::Liked, format!("Liked ({})", self.likes.len()));
-                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+                ui.selectable_value(&mut self.tab, Tab::Browse, "🖼  Browse");
+                ui.selectable_value(&mut self.tab, Tab::Liked, format!("♥  Liked  ·  {}", self.likes.len()));
+                ui.selectable_value(&mut self.tab, Tab::Settings, "⚙  Settings");
             });
         });
-        if !self.status.is_empty() {
-            egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label(&self.status);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Dismiss").clicked() {
-                            self.status.clear();
-                        }
-                    });
-                });
-            });
-        }
         let margin = egui::Frame::central_panel(&ctx.style()).inner_margin(16);
         egui::CentralPanel::default().frame(margin).show(ctx, |ui| match self.tab {
             Tab::Browse => self.browse_ui(ui),
@@ -574,6 +744,7 @@ impl App for CrossWall {
             Tab::Settings => self.settings_ui(ui),
         });
         self.preview_ui(ctx);
+        self.toast_ui(ctx);
     }
 
     fn scale(&self) -> f32 {

@@ -10,11 +10,13 @@ pub struct Settings {
     pub sync_folder: String,
     /// Multiplies the display scale, which the app follows by itself.
     pub ui_zoom: f32,
+    /// `None` follows the main display. `[0, 0]` is any size.
+    pub min_resolution: Option<[u32; 2]>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { pexels_key: String::new(), sync_folder: String::new(), ui_zoom: 1.0 }
+        Self { pexels_key: String::new(), sync_folder: String::new(), ui_zoom: 1.0, min_resolution: None }
     }
 }
 
@@ -54,7 +56,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a/settings.json");
         assert_eq!(Settings::load(&path), Settings::default());
-        let settings = Settings { pexels_key: "k".into(), sync_folder: "f".into(), ui_zoom: 1.5 };
+        let settings = Settings { pexels_key: "k".into(), sync_folder: "f".into(), ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
         std::fs::write(&path, "{broken").unwrap();
