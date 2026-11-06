@@ -78,6 +78,33 @@ fn window() -> *mut video::SDL_Window {
     }
 }
 
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+
+/// Gives the window the app's icon, which the taskbar and window switcher show.
+/// SDL copies the pixels. A failure only leaves the default icon.
+pub fn set_window_icon() {
+    let (window, Ok(icon)) = (window(), image::load_from_memory(ICON_PNG)) else { return };
+    if window.is_null() {
+        return;
+    }
+    let mut icon = icon.to_rgba8();
+    let (width, height) = (icon.width() as i32, icon.height() as i32);
+    // SAFETY: the surface borrows `icon`, which outlives it, and the window is live on its own thread.
+    unsafe {
+        let surface = sdl3::sys::surface::SDL_CreateSurfaceFrom(
+            width,
+            height,
+            sdl3::sys::pixels::SDL_PIXELFORMAT_RGBA32,
+            icon.as_mut_ptr().cast(),
+            width * 4,
+        );
+        if !surface.is_null() {
+            video::SDL_SetWindowIcon(window, surface);
+            sdl3::sys::surface::SDL_DestroySurface(surface);
+        }
+    }
+}
+
 /// Replaces the system frame. On failure the system frame stays, and the app
 /// must not draw a second title bar.
 pub fn install() -> bool {
@@ -144,8 +171,12 @@ pub fn close() {
 /// Draws the bar's name and caption buttons.
 pub fn title_bar(ui: &mut egui::Ui) {
     let bar = ui.max_rect();
+    let icon_rect = egui::Rect::from_center_size(bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(18.0, 18.0));
+    if let Some(texture) = title_icon(ui.ctx()) {
+        egui::Image::new(&texture).corner_radius(4).paint_at(ui, icon_rect);
+    }
     ui.painter().text(
-        bar.left_center() + egui::vec2(14.0, 0.0),
+        bar.left_center() + egui::vec2(40.0, 0.0),
         egui::Align2::LEFT_CENTER,
         "cross-wall",
         egui::TextStyle::Body.resolve(ui.style()),
@@ -172,6 +203,20 @@ enum Icon {
 }
 
 /// Drawn as lines: these glyphs are missing from some system fonts.
+/// Decoded once and kept in egui's own storage.
+fn title_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new("title-icon");
+    if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(texture);
+    }
+    let image = image::load_from_memory(ICON_PNG).ok()?.thumbnail(64, 64).to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+    let texture = ctx.load_texture("title-icon", pixels, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    Some(texture)
+}
+
 fn caption(ui: &mut egui::Ui, rect: egui::Rect, icon: Icon, danger: bool) -> bool {
     let response = ui.interact(rect, ui.id().with(("caption", icon)), egui::Sense::click());
     let mut ink = ui.visuals().text_color();

@@ -20,6 +20,7 @@ use crate::browse::Browse;
 use crate::chrome;
 use crate::egui_module::App;
 use crate::gallery;
+use crate::icons;
 use crate::images::{self, Images, Slot};
 use crate::installation::{self, UpdateState};
 use crate::librarian::{now, Command, Librarian};
@@ -223,7 +224,7 @@ impl CrossWall {
             card(ui, "Wallpaper folder", |ui| {
                 ui.label("Downloads go to the root of this folder. Your images and subfolders in it appear in the Library.");
                 ui.horizontal(|ui| {
-                    if ui.button("Choose").clicked() {
+                    if ui.button(icons::with(icons::CHOOSE, "Choose")).clicked() {
                         self.pick_folder();
                     }
                     ui.add(egui::TextEdit::singleline(&mut self.draft.wallpaper_folder).desired_width(f32::INFINITY));
@@ -248,7 +249,7 @@ impl CrossWall {
                     ui.add(egui::Slider::new(&mut self.draft.ui_zoom, 0.5..=2.0));
                 });
             });
-            if primary_button(ui, "Save").clicked() {
+            if primary_button(ui, &icons::with(icons::SAVE, "Save")).clicked() {
                 self.save_settings();
             }
             ui.add_space(8.0);
@@ -269,7 +270,7 @@ impl CrossWall {
                 logs::set_enabled(enabled);
                 self.save_quietly();
             }
-            if ui.button("Open log folder").clicked() {
+            if ui.button(icons::with(icons::CHOOSE, "Open log folder")).clicked() {
                 let folder = crate::settings::data_dir();
                 let _ = std::fs::create_dir_all(&folder);
                 let _ = open::that_detached(folder);
@@ -280,17 +281,17 @@ impl CrossWall {
     fn install_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(format!("Version {}", installation::VERSION));
         ui.horizontal(|ui| {
-            if ui.button("Check for updates").clicked() {
+            if ui.button(icons::with(icons::UPDATE, "Check for updates")).clicked() {
                 self.status = "Checking for updates...".into();
                 let _ = self.update_requests.send(Action::Check);
             }
             if let Some(version) = self.update_available.clone() {
-                if primary_button(ui, &format!("Update to {version}")).clicked() {
+                if primary_button(ui, &icons::with(icons::DOWNLOAD, &format!("Update to {version}"))).clicked() {
                     self.status = "Downloading the update...".into();
                     let _ = self.update_requests.send(Action::Stage);
                 }
             }
-            if !self.installed && ui.button("Install").clicked() {
+            if !self.installed && ui.button(icons::with(icons::INSTALL, "Install")).clicked() {
                 self.status = "Installing...".into();
                 let _ = self.update_requests.send(Action::Install);
             }
@@ -365,7 +366,7 @@ impl CrossWall {
     fn liked_ui(&mut self, ui: &mut egui::Ui) {
         let photos: Vec<Photo> = self.snapshot.files.iter().filter(|e| e.info.liked).map(entry_photo).collect();
         if photos.is_empty() {
-            empty_state(ui, "♥", "Nothing liked yet", "Like a wallpaper in Browse or the Library to see it here.");
+            empty_state(ui, icons::LIKED, "Nothing liked yet", "Like a wallpaper in Browse or the Library to see it here.");
             return;
         }
         self.shown = photos.clone();
@@ -381,7 +382,7 @@ impl CrossWall {
         }
         let kept = self.entry_for(photo).map(|e| (e.path.clone(), e.info.liked));
         let liked = kept.as_ref().is_some_and(|k| k.1);
-        let heart = if liked { "♥ Liked" } else { "♡ Like" };
+        let heart = if liked { icons::with(icons::LIKED, "Liked") } else { icons::with(icons::LIKE, "Like") };
         if ui.button(heart).clicked() {
             self.pending.insert(photo.id.clone(), Arc::default());
             match &kept {
@@ -389,7 +390,7 @@ impl CrossWall {
                 None => self.start_download(photo, true),
             }
         }
-        if kept.is_none() && primary_button(ui, "Download").clicked() {
+        if kept.is_none() && primary_button(ui, &icons::with(icons::DOWNLOAD, "Download")).clicked() {
             self.pending.insert(photo.id.clone(), Arc::default());
             self.start_download(photo, false);
         }
@@ -528,13 +529,13 @@ impl CrossWall {
         }
         self.progress_strip(ui);
         if self.browse.photos.is_empty() && self.browse.loading {
-            empty_state(ui, "🖼", "Finding wallpapers", "Asking the source for photos...");
+            empty_state(ui, icons::BROWSE, "Finding wallpapers", "Asking the source for photos...");
             return;
         }
         if self.browse.photos.is_empty() && !self.browse.message.is_empty() {
             let message = self.browse.message.clone();
-            empty_state(ui, "🖼", "No wallpapers to show", &message);
-            if self.browse.has_more && centered_button(ui, "Try again") {
+            empty_state(ui, icons::BROWSE, "No wallpapers to show", &message);
+            if self.browse.has_more && centered_button(ui, &icons::with(icons::RETRY, "Try again")) {
                 self.browse.load_more(&self.client);
             }
             return;
@@ -551,7 +552,7 @@ impl CrossWall {
             ui.vertical_centered(|ui| {
                 if self.browse.loading {
                     ui.spinner();
-                } else if self.browse.is_stalled() && ui.button("Try again").clicked() {
+                } else if self.browse.is_stalled() && ui.button(icons::with(icons::RETRY, "Try again")).clicked() {
                     self.browse.load_more(&self.client);
                 }
                 ui.add_space(4.0);
@@ -671,7 +672,7 @@ impl CrossWall {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.applying {
                         ui.spinner();
-                    } else if ui.button("Apply").clicked() {
+                    } else if ui.button(icons::with(icons::APPLY, "Apply")).clicked() {
                         self.start_apply(photo);
                     }
                     self.keep_buttons(ui, photo);
@@ -760,12 +761,12 @@ impl CrossWall {
                     ui.label(&photo.license);
                 }
                 if !photo.url.is_empty() {
-                    ui.hyperlink_to("View at the source", &photo.url);
+                    ui.hyperlink_to(icons::with(icons::OPEN_LINK, "View at the source"), &photo.url);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.applying {
                         ui.spinner();
-                    } else if primary_button(ui, "Apply").clicked() {
+                    } else if primary_button(ui, &icons::with(icons::APPLY, "Apply")).clicked() {
                         self.start_apply(&photo);
                     }
                     self.keep_buttons(ui, &photo);
@@ -911,10 +912,10 @@ impl CrossWall {
     fn navigation_ui(&mut self, ui: &mut egui::Ui) {
         let liked = self.snapshot.files.iter().filter(|e| e.info.liked).count();
         let items = [
-            (Tab::Browse, "🖼  Browse".to_string()),
-            (Tab::Library, format!("🗀  Library  ·  {}", self.snapshot.files.len())),
-            (Tab::Liked, format!("♥  Liked  ·  {liked}")),
-            (Tab::Settings, "⚙  Settings".to_string()),
+            (Tab::Browse, icons::with(icons::BROWSE, "Browse")),
+            (Tab::Library, icons::with(icons::LIBRARY, &format!("Library  ·  {}", self.snapshot.files.len()))),
+            (Tab::Liked, icons::with(icons::LIKED, &format!("Liked  ·  {liked}"))),
+            (Tab::Settings, icons::with(icons::SETTINGS, "Settings")),
         ];
         let selected = items.iter().position(|item| item.0 == self.tab).unwrap_or(0);
         let position = animate_eased(ui.ctx(), "nav-highlight", selected as f32, TRANSITION_SECONDS as f32, easing::cubic_out);
@@ -952,6 +953,7 @@ impl CrossWall {
             self.styled = true;
             self.apply_theme(ctx);
             self.display_size = theme::primary_display_size();
+            chrome::set_window_icon();
             self.custom_frame = chrome::install();
             self.browse.min = self.effective_min();
             let (ctx, desktop) = (ctx.clone(), self.desktop);
