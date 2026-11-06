@@ -3,10 +3,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub pexels_key: String,
+    pub theme: ThemeMode,
     pub sync_folder: String,
     /// Multiplies the display scale, which the app follows by itself.
     pub ui_zoom: f32,
@@ -16,7 +25,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { pexels_key: String::new(), sync_folder: String::new(), ui_zoom: 1.0, min_resolution: None }
+        Self { theme: ThemeMode::Dark, sync_folder: String::new(), ui_zoom: 1.0, min_resolution: None }
     }
 }
 
@@ -52,11 +61,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_theme_starts_dark_even_for_older_settings_files() {
+        assert_eq!(Settings::default().theme, ThemeMode::Dark);
+        let old: Settings = serde_json::from_str(r#"{"pexels_key":"gone","sync_folder":"f"}"#).unwrap();
+        assert_eq!((old.theme, old.sync_folder.as_str()), (ThemeMode::Dark, "f"));
+    }
+
+    #[test]
     fn round_trips_and_survives_bad_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a/settings.json");
         assert_eq!(Settings::load(&path), Settings::default());
-        let settings = Settings { pexels_key: "k".into(), sync_folder: "f".into(), ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
+        let settings = Settings { theme: ThemeMode::Light, sync_folder: "f".into(), ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
         std::fs::write(&path, "{broken").unwrap();

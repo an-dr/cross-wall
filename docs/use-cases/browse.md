@@ -4,8 +4,8 @@
 
 - **Actor**: Wallpaper user.
 - **Goal**: Find a wallpaper without knowing what to search for.
-- **Flow**: Open the app, optionally pick another source, and scroll, pressing Load more for further photos.
-- **Success**: A thumbnail grid fills in while the window stays responsive. No key or account is needed, except for Pexels. Photos credit their photographer where the source names one, and the screen links to the source. Network failures and rate limits show a message.
+- **Flow**: Open the app, optionally pick another source, and scroll; more photos load as the end approaches. After a failure, Try again resumes.
+- **Success**: A thumbnail grid fills in while the window stays responsive. No key or account is needed. A bar under the toolbar shows loading progress. Photos credit their photographer where the source names one, and the screen links to the source. Network failures and rate limits show a message.
 
 ### UC-BROWSE-02: Search photos
 

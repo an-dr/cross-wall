@@ -1,6 +1,4 @@
-//! Each source's request URL and answer format. Only Pexels needs a key. Every
-//! ID is prefixed by its source, except Pexels', which keeps the plain numbers
-//! that existing likes were stored under.
+//! Each source's request URL and answer format. Every ID is prefixed by its source.
 use serde_json::Value;
 
 use crate::{Error, MinSize, Orientation, Page, Photo, Source, Sources};
@@ -13,16 +11,6 @@ pub fn url(source: Source, query: &str, orientation: Orientation, min: MinSize, 
     let q = encode(query.trim());
     let empty = query.trim().is_empty();
     match source {
-        Source::Pexels if empty => format!("https://api.pexels.com/v1/curated?per_page={PER_PAGE}&page={page}"),
-        Source::Pexels => {
-            let shape = match orientation {
-                Orientation::Any => "",
-                Orientation::Landscape => "&orientation=landscape",
-                Orientation::Portrait => "&orientation=portrait",
-                Orientation::Square => "&orientation=square",
-            };
-            format!("https://api.pexels.com/v1/search?query={q}&per_page={PER_PAGE}&page={page}{shape}")
-        }
         // purity=100 is Wallhaven's safe-for-work filter and categories=100 its General
         // category, whose results look like wallpapers. Neither is a setting.
         Source::Wallhaven => {
@@ -70,18 +58,8 @@ pub fn url(source: Source, query: &str, orientation: Orientation, min: MinSize, 
 
 pub fn parse(source: Source, body: &[u8]) -> Result<Page, Error> {
     let bad = |e: serde_json::Error| Error::Malformed(e.to_string());
-    if source == Source::Pexels {
-        #[derive(serde::Deserialize)]
-        struct Answer {
-            photos: Vec<Photo>,
-            next_page: Option<String>,
-        }
-        let answer: Answer = serde_json::from_slice(body).map_err(bad)?;
-        return Ok(Page { photos: answer.photos, has_more: answer.next_page.is_some() });
-    }
     let json: Value = serde_json::from_slice(body).map_err(bad)?;
     Ok(match source {
-        Source::Pexels => unreachable!("handled above"),
         Source::Wallhaven => wallhaven(&json),
         Source::Openverse => openverse(&json),
         Source::Commons => commons(&json),

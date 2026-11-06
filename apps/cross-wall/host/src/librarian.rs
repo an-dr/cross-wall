@@ -81,7 +81,7 @@ mod tests {
 
     struct Answer(u16);
     impl Transport for Answer {
-        fn get(&self, _: &str, _: Option<&str>) -> Result<(u16, Vec<u8>), String> {
+        fn get(&self, _: &str) -> Result<(u16, Vec<u8>), String> {
             Ok((self.0, b"image".to_vec()))
         }
     }
@@ -107,7 +107,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let l = Librarian::start(dir.path().into(), None);
         assert!(next(&l).likes.is_empty());
-        let client = Client::with_transport("k", Arc::new(Answer(200)));
+        let client = Client::with_transport(Arc::new(Answer(200)));
         l.commands.send(Command::Like(client, photo())).unwrap();
         let liked = next(&l);
         assert_eq!((liked.likes.len(), liked.finished.as_deref()), (1, Some("5")));
@@ -120,7 +120,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let l = Librarian::start(dir.path().into(), None);
         next(&l);
-        let client = Client::with_transport("k", Arc::new(Answer(500)));
+        let client = Client::with_transport(Arc::new(Answer(500)));
         l.commands.send(Command::Like(client, photo())).unwrap();
         let update = next(&l);
         assert!(update.likes.is_empty());

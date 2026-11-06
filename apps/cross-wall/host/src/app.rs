@@ -18,12 +18,13 @@ use crate::gallery;
 use crate::images::{self, Images, Slot};
 use crate::installation::{self, UpdateState};
 use crate::librarian::{Command, Librarian};
-use crate::settings::Settings;
+use crate::settings::{Settings, ThemeMode};
 use crate::theme::{self, System};
 
 const ROW_HEIGHT: f32 = 210.0;
 const TILE_GAP: f32 = 8.0;
 const TOAST_SECONDS: f64 = 8.0;
+const AUTO_LOAD_MARGIN: f32 = 500.0;
 const RESOLUTIONS: [(u32, u32); 5] = [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (5120, 2880)];
 const THEME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 const SCALE_POLL: f64 = 1.0;
@@ -128,7 +129,7 @@ impl CrossWall {
             likes: Vec::new(),
             pending: HashSet::new(),
             tab,
-            client: Client::new(settings.pexels_key.clone()),
+            client: Client::new(),
             draft: settings.clone(),
             settings,
             settings_path,
@@ -143,10 +144,6 @@ impl CrossWall {
     fn save_settings(&mut self) {
         self.status = match self.draft.save(&self.settings_path) {
             Ok(()) => {
-                if self.draft.pexels_key != self.settings.pexels_key {
-                    self.client = Client::new(self.draft.pexels_key.clone());
-                    self.browse.reset();
-                }
                 if self.draft.sync_folder != self.settings.sync_folder {
                     let _ = self.librarian.commands.send(Command::SetShared(shared_folder(&self.draft)));
                 }
@@ -161,16 +158,26 @@ impl CrossWall {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(680.0));
             ui.heading("Settings");
-            card(ui, "Pexels (optional)", |ui| {
-                ui.label("API key. The other photo sources need none.");
-                ui.add(egui::TextEdit::singleline(&mut self.draft.pexels_key).password(true).desired_width(f32::INFINITY));
-                ui.hyperlink_to("Get a free API key", "https://www.pexels.com/api/");
-            });
             card(ui, "Sync", |ui| {
                 ui.label("Folder kept in sync by Syncthing, Dropbox, OneDrive, or a similar tool");
                 ui.add(egui::TextEdit::singleline(&mut self.draft.sync_folder).desired_width(f32::INFINITY));
             });
             card(ui, "Appearance", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Theme");
+                    let mut mode = self.settings.theme;
+                    for (value, name) in [(ThemeMode::Dark, "Dark"), (ThemeMode::Light, "Light"), (ThemeMode::System, "System")] {
+                        ui.selectable_value(&mut mode, value, name);
+                    }
+                    if mode != self.settings.theme {
+                        self.settings.theme = mode;
+                        self.draft.theme = mode;
+                        self.apply_theme(ui.ctx());
+                        if let Err(error) = self.settings.save(&self.settings_path) {
+                            self.status = format!("Could not save settings: {error}");
+                        }
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.label("Interface zoom");
                     ui.add(egui::Slider::new(&mut self.draft.ui_zoom, 0.5..=2.0));
@@ -374,14 +381,11 @@ impl CrossWall {
     }
 
     fn browse_ui(&mut self, ui: &mut egui::Ui) {
-        let locked = |app: &Self| app.browse.source.needs_key() && app.settings.pexels_key.is_empty();
-        if !locked(self) {
-            self.browse.start_once(&self.client);
-        }
+        self.browse.start_once(&self.client);
         let mut refresh = false;
         ui.horizontal_wrapped(|ui| {
             let searchable = self.browse.source.has_search();
-            let hint = if searchable { "Search wallpapers, then press Enter" } else { "This source has no search" };
+            let hint = if searchable { "Search wallpapers" } else { "This source has no search" };
             let edit = egui::TextEdit::singleline(&mut self.browse.text)
                 .hint_text(hint)
                 .margin(egui::Margin::symmetric(10, 5))
@@ -405,35 +409,33 @@ impl CrossWall {
         ui.add_space(6.0);
         if refresh {
             self.images.forget("thumb/");
-            if locked(self) {
-                self.browse.clear();
-            } else {
-                self.browse.search(&self.client);
-            }
+            self.browse.search(&self.client);
         }
-        if locked(self) {
-            empty_state(ui, "🔑", "Pexels needs a free API key", "Enter one in Settings, or pick another source.");
+        self.progress_strip(ui);
+        if self.browse.photos.is_empty() && self.browse.loading {
+            empty_state(ui, "🖼", "Finding wallpapers", "Asking the source for photos...");
             return;
         }
         if self.browse.photos.is_empty() && !self.browse.message.is_empty() {
             let message = self.browse.message.clone();
             empty_state(ui, "🖼", "No wallpapers to show", &message);
-            if self.browse.has_more && centered_button(ui, "Load more") {
+            if self.browse.has_more && centered_button(ui, "Try again") {
                 self.browse.load_more(&self.client);
             }
             return;
         }
         let photos = self.browse.photos.clone();
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            if !self.browse.message.is_empty() {
-                ui.label(self.browse.message.clone());
-            }
+        let scroll = egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             self.gallery(ui, &photos);
+            if !self.browse.message.is_empty() {
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| ui.label(self.browse.message.clone()));
+            }
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
                 if self.browse.loading {
                     ui.spinner();
-                } else if self.browse.has_more && ui.button("Load more").clicked() {
+                } else if self.browse.is_stalled() && ui.button("Try again").clicked() {
                     self.browse.load_more(&self.client);
                 }
                 ui.add_space(4.0);
@@ -442,6 +444,41 @@ impl CrossWall {
                 ui.add_space(8.0);
             });
         });
+        // Starts before the very end, so scrolling rarely reaches a gap.
+        let bottom = scroll.state.offset.y + scroll.inner_rect.height();
+        if bottom + AUTO_LOAD_MARGIN >= scroll.content_size.y && self.browse.can_auto_load() {
+            self.browse.load_more(&self.client);
+        }
+    }
+
+    /// A thin bar under the toolbar. It slides while asking for a page and fills
+    /// as thumbnails arrive. It always keeps its height, so the grid never jumps.
+    fn progress_strip(&mut self, ui: &mut egui::Ui) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 3.0), egui::Sense::hover());
+        let progress = self.images.progress();
+        let accent = ui.visuals().selection.bg_fill;
+        let track = ui.visuals().faint_bg_color;
+        let time = ui.input(|i| i.time) as f32;
+        let segment = if let Some((done, total)) = progress {
+            Some((0.0, (done as f32 + 0.5) / total as f32))
+        } else if self.browse.loading {
+            let start = (time * 0.7).fract() * 1.25 - 0.25;
+            Some((start.max(0.0), (start + 0.25).min(1.0)))
+        } else {
+            None
+        };
+        let Some((from, to)) = segment else { return };
+        let radius = egui::CornerRadius::same(2);
+        ui.painter().rect_filled(rect, radius, track);
+        let bar = egui::Rect::from_x_y_ranges(rect.left() + rect.width() * from..=rect.left() + rect.width() * to, rect.y_range());
+        ui.painter().rect_filled(bar, radius, accent);
+        if let Some((done, total)) = progress {
+            let text = format!("Loading wallpapers {done} / {total}");
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            let colour = ui.visuals().weak_text_color();
+            let at = rect.right_bottom() + egui::vec2(0.0, 3.0);
+            ui.painter().text(at, egui::Align2::RIGHT_TOP, text, font, colour);
+        }
     }
 
     fn gallery(&mut self, ui: &mut egui::Ui, photos: &[Photo]) {
@@ -556,6 +593,8 @@ impl CrossWall {
                 }
                 Slot::Loading => {
                     ui.put(stage, egui::Spinner::new().color(egui::Color32::WHITE).size(32.0));
+                    let below = stage.center() + egui::vec2(0.0, 34.0);
+                    ui.painter().text(below, egui::Align2::CENTER_TOP, "Loading full image", egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE);
                     None
                 }
             };
@@ -641,11 +680,16 @@ impl CrossWall {
                 });
             });
     }
+    fn apply_theme(&self, ctx: &egui::Context) {
+        let dark = theme::resolve_dark(self.settings.theme, self.system);
+        theme::apply(ctx, self.desktop, System { dark, ..self.system });
+    }
+
     /// Follows mode, accent, and display changes while the app runs.
     fn follow_system(&mut self, ctx: &egui::Context) {
         if !self.styled {
             self.styled = true;
-            theme::apply(ctx, self.desktop, self.system);
+            self.apply_theme(ctx);
             self.display_size = theme::primary_display_size();
             self.custom_frame = chrome::install();
             self.browse.min = self.effective_min();
@@ -656,7 +700,7 @@ impl CrossWall {
         while let Ok(system) = self.system_rx.try_recv() {
             if system != self.system {
                 self.system = system;
-                theme::apply(ctx, self.desktop, system);
+                self.apply_theme(ctx);
             }
         }
         let time = ctx.input(|i| i.time);

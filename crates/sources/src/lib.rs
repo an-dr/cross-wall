@@ -19,12 +19,10 @@ pub enum Source {
     Commons,
     Picsum,
     Nasa,
-    Pexels,
 }
 
 impl Source {
-    pub const ALL: [Source; 6] =
-        [Source::Wallhaven, Source::Openverse, Source::Commons, Source::Picsum, Source::Nasa, Source::Pexels];
+    pub const ALL: [Source; 5] = [Source::Wallhaven, Source::Openverse, Source::Commons, Source::Picsum, Source::Nasa];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -33,7 +31,6 @@ impl Source {
             Source::Commons => "Wikimedia Commons",
             Source::Picsum => "Lorem Picsum",
             Source::Nasa => "NASA Images",
-            Source::Pexels => "Pexels",
         }
     }
 
@@ -44,12 +41,7 @@ impl Source {
             Source::Commons => "https://commons.wikimedia.org",
             Source::Picsum => "https://picsum.photos",
             Source::Nasa => "https://images.nasa.gov",
-            Source::Pexels => "https://www.pexels.com",
         }
-    }
-
-    pub fn needs_key(self) -> bool {
-        self == Source::Pexels
     }
 
     pub fn has_search(self) -> bool {
@@ -66,7 +58,7 @@ pub struct Sources {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Photo {
-    /// Safe as a file name. Likes stored before there were several sources hold a number.
+    /// Safe as a file name. Likes kept from the former Pexels source hold a number.
     #[serde(deserialize_with = "id_from_text_or_number")]
     pub id: String,
     pub width: u32,
@@ -144,7 +136,7 @@ impl MinSize {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
-    BadKey,
+    Refused,
     RateLimited,
     Network(String),
     Status(u16),
@@ -154,7 +146,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::BadKey => write!(f, "The photo source rejected the request. For Pexels, check your API key in Settings."),
+            Error::Refused => write!(f, "The photo source refused the request."),
             Error::RateLimited => write!(f, "The photo source's rate limit was reached. Try again later or pick another source."),
             Error::Network(e) => write!(f, "Could not reach the photo source: {e}"),
             Error::Status(code) => write!(f, "The photo source answered with HTTP {code}."),
@@ -168,13 +160,13 @@ impl std::error::Error for Error {}
 /// One HTTP GET. A seam so tests run with no network.
 pub trait Transport: Send + Sync {
     /// Answers the status and body; an `Err` means no answer at all.
-    fn get(&self, url: &str, authorization: Option<&str>) -> Result<(u16, Vec<u8>), String>;
+    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String>;
 }
 
 pub struct Https;
 
 impl Transport for Https {
-    fn get(&self, url: &str, authorization: Option<&str>) -> Result<(u16, Vec<u8>), String> {
+    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String> {
         if !url.starts_with("https://") {
             return Err("only https URLs may be fetched".into());
         }
@@ -186,11 +178,7 @@ impl Transport for Https {
             // Wikimedia refuses requests with no descriptive client name.
             .user_agent(concat!("cross-wall/", env!("CARGO_PKG_VERSION"), " (https://github.com/an-dr/cross-wall)"))
             .build();
-        let mut request = agent.get(url);
-        if let Some(key) = authorization {
-            request = request.set("Authorization", key);
-        }
-        let response = match request.call() {
+        let response = match agent.get(url).call() {
             Ok(response) => response,
             Err(ureq::Error::Status(code, _)) => return Ok((code, Vec::new())),
             Err(error) => return Err(error.to_string()),
@@ -206,27 +194,31 @@ impl Transport for Https {
     }
 }
 
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 pub struct Client {
-    key: String,
     transport: Arc<dyn Transport>,
 }
 
 impl Client {
-    pub fn new(key: impl Into<String>) -> Self {
-        Self::with_transport(key, Arc::new(Https))
+    pub fn new() -> Self {
+        Self::with_transport(Arc::new(Https))
     }
 
-    pub fn with_transport(key: impl Into<String>, transport: Arc<dyn Transport>) -> Self {
-        Self { key: key.into(), transport }
+    pub fn with_transport(transport: Arc<dyn Transport>) -> Self {
+        Self { transport }
     }
 
     /// One page of results. An empty query means the source's own selection.
     pub fn search(&self, source: Source, query: &str, orientation: Orientation, min: MinSize, page: u32) -> Result<Page, Error> {
         let min = min.turned_for(orientation);
         let url = providers::url(source, query, orientation, min, page);
-        let key = source.needs_key().then_some(self.key.as_str());
-        let body = check(self.transport.get(&url, key))?;
+        let body = check(self.transport.get(&url))?;
         let mut result = providers::parse(source, &body)?;
         // Several sources cannot filter by size or shape, so every answer is checked here.
         result.photos.retain(|p| orientation.accepts(p.width, p.height) && min.accepts(p.width, p.height));
@@ -239,16 +231,16 @@ impl Client {
         self.download(&photo.src.medium).or_else(|_| self.download(&photo.src.original))
     }
 
-    /// Downloads an image from a URL a source gave. No key is sent: images are on public CDNs.
+    /// Downloads an image from a URL a source gave.
     pub fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
-        check(self.transport.get(url, None))
+        check(self.transport.get(url))
     }
 }
 
 fn check(answer: Result<(u16, Vec<u8>), String>) -> Result<Vec<u8>, Error> {
     match answer.map_err(Error::Network)? {
         (200, body) => Ok(body),
-        (401 | 403, _) => Err(Error::BadKey),
+        (401 | 403, _) => Err(Error::Refused),
         (429, _) => Err(Error::RateLimited),
         (code, _) => Err(Error::Status(code)),
     }

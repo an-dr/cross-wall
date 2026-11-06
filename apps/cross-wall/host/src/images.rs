@@ -22,6 +22,8 @@ pub struct Images {
     slots: HashMap<String, Slot>,
     jobs: Sender<(String, Bytes)>,
     done: Receiver<(String, Decoded)>,
+    /// Images asked for since the queue was last empty, for the progress bar.
+    batch: usize,
 }
 
 impl Images {
@@ -40,7 +42,7 @@ impl Images {
                 }
             });
         }
-        Self { slots: HashMap::new(), jobs, done }
+        Self { slots: HashMap::new(), jobs, done, batch: 0 }
     }
 
     /// The image under `key`, starting `bytes` on a worker the first time it is asked for.
@@ -48,6 +50,7 @@ impl Images {
         if !self.slots.contains_key(key) {
             let _ = self.jobs.send((key.to_string(), bytes()));
             self.slots.insert(key.to_string(), Slot::Loading);
+            self.batch += 1;
         }
         &self.slots[key]
     }
@@ -60,6 +63,17 @@ impl Images {
             };
             self.slots.insert(key, slot);
         }
+    }
+
+    /// How many of the current batch have finished, and its size. `None` when idle.
+    pub fn progress(&mut self) -> Option<(usize, usize)> {
+        let waiting = self.slots.values().filter(|slot| matches!(slot, Slot::Loading)).count();
+        if waiting == 0 {
+            self.batch = 0;
+            return None;
+        }
+        self.batch = self.batch.max(waiting);
+        Some((self.batch - waiting, self.batch))
     }
 
     /// Frees textures whose keys start with `prefix`, such as a replaced result list.

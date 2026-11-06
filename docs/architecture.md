@@ -13,7 +13,7 @@ flowchart TD
 | Part | Responsibility | Use cases |
 | --- | --- | --- |
 | host | Composes bones; draws every screen with egui; owns settings and paths | all |
-| sources | One search and download call over six photo sources, only Pexels needing a key; no UI or bones dependency | BROWSE, LIBRARY-01 |
+| sources | One search and download call over five keyless photo sources; no UI or bones dependency | BROWSE, LIBRARY-01 |
 | library | Local store of likes and merging with the sync folder | LIBRARY, SETUP-02 |
 | apply | Detects the desktop and sets the wallpaper | APPLY-01 |
 | launcher | Stable entry point selecting the newest installed version | INSTALL, UPDATE |

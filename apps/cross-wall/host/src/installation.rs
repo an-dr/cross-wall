@@ -52,7 +52,7 @@ fn integration() -> Result<(Integration<'static>, Locations), String> {
         Integration {
             id: "cross-wall",
             name: "cross-wall",
-            comment: "Browse Pexels photos and set them as your wallpaper",
+            comment: "Browse wallpapers and set them on your desktop",
             open_label: "Open in cross-wall",
             categories: "Graphics;Utility;",
             // The launcher path survives updates; a version folder's does not.

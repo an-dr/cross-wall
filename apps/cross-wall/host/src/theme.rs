@@ -3,6 +3,7 @@
 //! resembles the platform without being its real controls (docs/desktops.md).
 use std::path::PathBuf;
 
+use crate::settings::ThemeMode;
 use cross_wall_apply::Desktop;
 use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Stroke, TextStyle};
 
@@ -61,6 +62,15 @@ fn look(desktop: Desktop) -> Look {
             light_panel: 242,
             accent: Color32::from_rgb(99, 208, 223),
         },
+    }
+}
+
+/// Whether to draw dark: the user's choice, or the system's when they chose System.
+pub fn resolve_dark(mode: ThemeMode, system: System) -> bool {
+    match mode {
+        ThemeMode::Dark => true,
+        ThemeMode::Light => false,
+        ThemeMode::System => system.dark,
     }
 }
 
@@ -328,6 +338,14 @@ mod tests {
     use super::*;
 
     const DESKTOPS: [Desktop; 4] = [Desktop::Windows, Desktop::Kde, Desktop::Gnome, Desktop::Cosmic];
+
+    #[test]
+    fn the_theme_choice_overrides_the_system_unless_it_is_system() {
+        let system = System { dark: false, accent: None };
+        assert!(resolve_dark(ThemeMode::Dark, system));
+        assert!(!resolve_dark(ThemeMode::Light, System { dark: true, accent: None }));
+        assert!(!resolve_dark(ThemeMode::System, system));
+    }
 
     #[test]
     fn parses_system_values() {

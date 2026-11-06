@@ -23,6 +23,9 @@ pub struct Browse {
     pub min: MinSize,
     empty_pages: u32,
     read_on: bool,
+    /// Set after a failure or a long empty run, so automatic loading cannot
+    /// hammer a source. Asking by hand clears it.
+    stalled: bool,
     query: Query,
     pub photos: Vec<Photo>,
     page: u32,
@@ -45,6 +48,7 @@ impl Browse {
             min: MinSize::ANY,
             empty_pages: 0,
             read_on: false,
+            stalled: false,
             query: Query::default(),
             photos: Vec::new(),
             page: 0,
@@ -71,14 +75,25 @@ impl Browse {
         self.query = Query { min: self.min, source: self.source, text: self.text.trim().to_string(), orientation: self.orientation };
         self.photos.clear();
         self.empty_pages = 0;
+        self.stalled = false;
         self.page = 0;
         self.has_more = false;
         self.message.clear();
         self.load_more(client);
     }
 
+    pub fn can_auto_load(&self) -> bool {
+        self.has_more && !self.loading && !self.stalled
+    }
+
+    pub fn is_stalled(&self) -> bool {
+        self.has_more && self.stalled
+    }
+
     pub fn load_more(&mut self, client: &Client) {
         self.loading = true;
+        self.stalled = false;
+        self.message.clear();
         let (tx, generation, query, page) = (self.tx.clone(), self.generation, self.query.clone(), self.page + 1);
         let client = client.clone();
         std::thread::spawn(move || {
@@ -109,6 +124,7 @@ impl Browse {
                 self.photos.extend(page.photos);
                 self.empty_pages = if added == 0 { self.empty_pages + 1 } else { 0 };
                 self.read_on = added == 0 && self.has_more && self.empty_pages < MAX_EMPTY_PAGES;
+                self.stalled = added == 0 && !self.read_on;
                 if self.photos.is_empty() && !self.read_on {
                     self.message = if self.has_more {
                         "Nothing at this size so far. Load more, or lower the minimum resolution.".into()
@@ -117,24 +133,13 @@ impl Browse {
                     };
                 }
             }
-            Err(error) => self.message = error.to_string(),
+            Err(error) => {
+                self.message = error.to_string();
+                self.stalled = true;
+            }
         }
     }
 
-    /// Empties the results for a source that cannot be searched yet.
-    pub fn clear(&mut self) {
-        self.reset();
-        self.photos.clear();
-        self.has_more = false;
-    }
-
-    /// Lets a changed API key be tried at once.
-    pub fn reset(&mut self) {
-        self.started = false;
-        self.generation += 1;
-        self.loading = false;
-        self.message.clear();
-    }
 }
 
 #[cfg(test)]
@@ -176,6 +181,20 @@ mod tests {
         b.receive(0, page(&[], true));
         assert!(!b.read_on);
         assert!(b.message.contains("minimum resolution"));
+    }
+
+    #[test]
+    fn automatic_loading_stops_on_errors_and_empty_runs() {
+        let mut b = Browse::new();
+        b.receive(0, page(&[1], true));
+        assert!(b.can_auto_load());
+        b.loading = true;
+        assert!(!b.can_auto_load());
+        b.loading = false;
+        b.receive(0, Err(Error::RateLimited));
+        assert!(!b.can_auto_load() && b.is_stalled());
+        b.receive(0, page(&[2], true));
+        assert!(b.can_auto_load());
     }
 
     #[test]

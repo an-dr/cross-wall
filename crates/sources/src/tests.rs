@@ -3,51 +3,27 @@ use std::sync::Mutex;
 
 struct Canned {
     answer: Result<(u16, Vec<u8>), String>,
-    asked: Mutex<Vec<(String, Option<String>)>>,
+    asked: Mutex<Vec<String>>,
 }
 impl Transport for Canned {
-    fn get(&self, url: &str, auth: Option<&str>) -> Result<(u16, Vec<u8>), String> {
-        self.asked.lock().unwrap().push((url.into(), auth.map(Into::into)));
+    fn get(&self, url: &str) -> Result<(u16, Vec<u8>), String> {
+        self.asked.lock().unwrap().push(url.into());
         self.answer.clone()
     }
 }
 fn client(answer: Result<(u16, Vec<u8>), String>) -> (Client, Arc<Canned>) {
     let canned = Arc::new(Canned { answer, asked: Mutex::new(Vec::new()) });
-    (Client::with_transport("KEY", canned.clone()), canned)
+    (Client::with_transport(canned.clone()), canned)
 }
 fn parsed(source: Source, json: &str) -> Page {
     client(Ok((200, json.into()))).0.search(source, "x", Orientation::Any, MinSize::ANY, 1).unwrap()
-}
-
-const PEXELS: &str = r##"{"photos":[{"id":7,"width":6000,"height":4000,"url":"https://p/7","photographer":"A B",
-  "photographer_url":"https://p/a","src":{"original":"https://i/o","large2x":"https://i/l","medium":"https://i/m"}}],
-  "next_page":"https://n"}"##;
-
-#[test]
-fn pexels_sends_the_key_and_keeps_numeric_ids() {
-    let (c, canned) = client(Ok((200, PEXELS.into())));
-    let page = c.search(Source::Pexels, "", Orientation::Any, MinSize::ANY, 2).unwrap();
-    assert_eq!(page.photos[0].id, "7");
-    assert!(page.has_more);
-    let asked = canned.asked.lock().unwrap();
-    assert!(asked[0].0.ends_with("/curated?per_page=30&page=2"));
-    assert_eq!(asked[0].1.as_deref(), Some("KEY"));
-}
-
-#[test]
-fn keyless_sources_never_receive_the_key() {
-    for source in Source::ALL.into_iter().filter(|s| !s.needs_key()) {
-        let (c, canned) = client(Ok((200, b"{}".to_vec())));
-        c.search(source, "x", Orientation::Any, MinSize::ANY, 1).unwrap();
-        assert_eq!(canned.asked.lock().unwrap()[0].1, None, "{source:?}");
-    }
 }
 
 #[test]
 fn wallhaven_is_always_safe_for_work_and_encodes_the_query() {
     let (c, canned) = client(Ok((200, b"{}".to_vec())));
     c.search(Source::Wallhaven, "sea & sky/é", Orientation::Landscape, MinSize::ANY, 1).unwrap();
-    let url = canned.asked.lock().unwrap()[0].0.clone();
+    let url = canned.asked.lock().unwrap()[0].clone();
     assert!(url.contains("purity=100") && url.contains("categories=100"), "{url}");
     assert!(url.contains("q=sea%20%26%20sky%2F%C3%A9&"), "{url}");
     assert!(url.ends_with("&ratios=landscape"), "{url}");
@@ -123,7 +99,7 @@ fn filters_shape_where_the_source_cannot() {
 fn minimum_size_reaches_the_server_and_is_enforced_here() {
     let (c, canned) = client(Ok((200, b"{}".to_vec())));
     c.search(Source::Wallhaven, "", Orientation::Any, MinSize { width: 2560, height: 1440 }, 1).unwrap();
-    assert!(canned.asked.lock().unwrap()[0].0.contains("&atleast=2560x1440&"));
+    assert!(canned.asked.lock().unwrap()[0].contains("&atleast=2560x1440&"));
     let json = r#"[{"id":"1","author":"a","width":1920,"height":1080,"url":"u","download_url":"d"},{"id":"2","author":"a","width":3840,"height":2160,"url":"u","download_url":"d"}]"#;
     let page = client(Ok((200, json.into()))).0.search(Source::Picsum, "", Orientation::Any, MinSize { width: 2560, height: 1440 }, 1).unwrap();
     assert_eq!(page.photos.len(), 1);
@@ -134,7 +110,7 @@ fn minimum_size_reaches_the_server_and_is_enforced_here() {
 fn portrait_searches_turn_the_minimum() {
     let (c, canned) = client(Ok((200, b"{}".to_vec())));
     c.search(Source::Wallhaven, "", Orientation::Portrait, MinSize { width: 2560, height: 1440 }, 1).unwrap();
-    assert!(canned.asked.lock().unwrap()[0].0.contains("&atleast=1440x2560&"));
+    assert!(canned.asked.lock().unwrap()[0].contains("&atleast=1440x2560&"));
 }
 
 #[test]
@@ -145,16 +121,9 @@ fn likes_stored_with_numeric_ids_still_load() {
 }
 
 #[test]
-fn download_does_not_send_the_key() {
-    let (c, canned) = client(Ok((200, vec![1, 2])));
-    assert_eq!(c.download("https://i/o").unwrap(), vec![1, 2]);
-    assert_eq!(canned.asked.lock().unwrap()[0].1, None);
-}
-
-#[test]
 fn maps_failures() {
     let search = |c: Client| c.search(Source::Openverse, "x", Orientation::Any, MinSize::ANY, 1);
-    for (status, expected) in [(401, Error::BadKey), (429, Error::RateLimited), (500, Error::Status(500))] {
+    for (status, expected) in [(401, Error::Refused), (429, Error::RateLimited), (500, Error::Status(500))] {
         assert_eq!(search(client(Ok((status, vec![]))).0).unwrap_err(), expected);
     }
     assert!(matches!(search(client(Err("down".into())).0), Err(Error::Network(_))));
@@ -165,8 +134,8 @@ fn maps_failures() {
 #[test]
 #[ignore]
 fn live_keyless_sources_answer_and_their_images_download() {
-    let client = Client::new("");
-    for source in Source::ALL.into_iter().filter(|s| !s.needs_key()) {
+    let client = Client::new();
+    for source in Source::ALL {
         let page = client.search(source, "mountain", Orientation::Any, MinSize::ANY, 1).unwrap_or_else(|e| panic!("{source:?}: {e}"));
         let photo = page.photos.first().unwrap_or_else(|| panic!("{source:?}: no photos"));
         println!("{source:?}: {} photos, more={}, {} x {}, by {}, {}", page.photos.len(), page.has_more, photo.width, photo.height, photo.photographer, photo.license);
