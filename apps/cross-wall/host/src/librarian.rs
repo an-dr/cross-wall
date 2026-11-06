@@ -5,20 +5,20 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cross_wall_library::{Library, Like};
-use cross_wall_pexels::{Client, Photo};
+use cross_wall_sources::{Client, Photo};
 
 const SYNC_EVERY: Duration = Duration::from_secs(30);
 
 pub enum Command {
     Like(Client, Photo),
-    Unlike(u64),
+    Unlike(String),
     SetShared(Option<PathBuf>),
 }
 
 pub struct Update {
     pub likes: Vec<Like>,
     /// The photo a finished command was about, so its Saving state can end.
-    pub finished: Option<u64>,
+    pub finished: Option<String>,
     /// `None` clears a previous problem.
     pub problem: Option<String>,
 }
@@ -45,7 +45,7 @@ fn run(local: PathBuf, shared: Option<PathBuf>, commands: Receiver<Command>, upd
         let mut problem = None;
         match next {
             Ok(Some(Command::Like(client, photo))) => {
-                finished = Some(photo.id);
+                finished = Some(photo.id.clone());
                 problem = client
                     .download(&photo.src.original)
                     .map_err(|e| e.to_string())
@@ -53,8 +53,8 @@ fn run(local: PathBuf, shared: Option<PathBuf>, commands: Receiver<Command>, upd
                     .err();
             }
             Ok(Some(Command::Unlike(id))) => {
+                problem = library.unlike(&id, now()).err();
                 finished = Some(id);
-                problem = library.unlike(id, now()).err();
             }
             Ok(Some(Command::SetShared(shared))) => library = Library::new(local.clone(), shared),
             Ok(None) | Err(RecvTimeoutError::Timeout) => {}
@@ -76,7 +76,7 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cross_wall_pexels::{Sources, Transport};
+    use cross_wall_sources::{Sources, Transport};
     use std::sync::Arc;
 
     struct Answer(u16);
@@ -88,7 +88,8 @@ mod tests {
     fn photo() -> Photo {
         let s = String::new;
         Photo {
-            id: 5,
+            id: "5".into(),
+            license: s(),
             width: 1,
             height: 1,
             url: s(),
@@ -109,8 +110,8 @@ mod tests {
         let client = Client::with_transport("k", Arc::new(Answer(200)));
         l.commands.send(Command::Like(client, photo())).unwrap();
         let liked = next(&l);
-        assert_eq!((liked.likes.len(), liked.finished), (1, Some(5)));
-        l.commands.send(Command::Unlike(5)).unwrap();
+        assert_eq!((liked.likes.len(), liked.finished.as_deref()), (1, Some("5")));
+        l.commands.send(Command::Unlike("5".into())).unwrap();
         assert!(next(&l).likes.is_empty());
     }
 

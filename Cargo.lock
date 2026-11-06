@@ -286,7 +286,7 @@ dependencies = [
  "bones-launcher",
  "cross-wall-apply",
  "cross-wall-library",
- "cross-wall-pexels",
+ "cross-wall-sources",
  "dirs",
  "egui",
  "image",
@@ -310,14 +310,14 @@ dependencies = [
 name = "cross-wall-library"
 version = "0.1.0"
 dependencies = [
- "cross-wall-pexels",
+ "cross-wall-sources",
  "serde",
  "serde_json",
  "tempfile",
 ]
 
 [[package]]
-name = "cross-wall-pexels"
+name = "cross-wall-sources"
 version = "0.1.0"
 dependencies = [
  "native-tls",

@@ -7,7 +7,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use bones_kernel::messages::upgrader::Action;
 use cross_wall_apply::Desktop;
 use cross_wall_library::{Library, Like};
-use cross_wall_pexels::{Client, Orientation, Photo};
+use cross_wall_sources::{Client, Orientation, Photo, Source};
 
 use crate::browse::Browse;
 use crate::egui_module::App;
@@ -49,7 +49,7 @@ pub struct CrossWall {
     library: Library,
     librarian: Librarian,
     likes: Vec<Like>,
-    pending: HashSet<u64>,
+    pending: HashSet<String>,
     update_requests: Sender<Action>,
     update_results: Receiver<UpdateState>,
     update_available: Option<String>,
@@ -78,7 +78,7 @@ impl CrossWall {
         let cache = data_dir.join("cache");
         let cache_to_prune = cache.clone();
         std::thread::spawn(move || images::prune_cache(&cache_to_prune));
-        let tab = if settings.pexels_key.is_empty() { Tab::Settings } else { Tab::Browse };
+        let tab = Tab::Browse;
         let local = data_dir.join("library");
         let (applied_tx, applied_rx) = channel();
         // An unsupported desktop still needs a look; applying says it is unsupported.
@@ -145,8 +145,8 @@ impl CrossWall {
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.heading("Settings");
-            card(ui, "Pexels", |ui| {
-                ui.label("API key");
+            card(ui, "Pexels (optional)", |ui| {
+                ui.label("API key. The other photo sources need none.");
                 ui.add(egui::TextEdit::singleline(&mut self.draft.pexels_key).password(true).desired_width(f32::INFINITY));
                 ui.hyperlink_to("Get a free API key", "https://www.pexels.com/api/");
             });
@@ -224,22 +224,22 @@ impl CrossWall {
         }
     }
 
-    fn is_liked(&self, id: u64) -> bool {
+    fn is_liked(&self, id: &str) -> bool {
         self.likes.iter().any(|like| like.photo.id == id)
     }
 
     fn thumb_slot(&mut self, photo: &Photo) -> &Slot {
         // A liked photo needs no network, and thumbnails for it must work offline.
-        if self.is_liked(photo.id) {
-            let path = self.library.image(photo.id);
+        if self.is_liked(&photo.id) {
+            let path = self.library.image(&photo.id);
             return self.images.get(&format!("liked/{}", photo.id), || {
                 Box::new(move || std::fs::read(path).map_err(|e| e.to_string()))
             });
         }
-        let (client, url, path) =
-            (self.client.clone(), photo.src.medium.clone(), self.cache.join(format!("{}-thumb.jpg", photo.id)));
+        let (client, wanted, path) =
+            (self.client.clone(), photo.clone(), self.cache.join(format!("{}-thumb.jpg", photo.id)));
         self.images.get(&format!("thumb/{}", photo.id), || {
-            Box::new(move || images::cached(path, || client.download(&url).map_err(|e| e.to_string())))
+            Box::new(move || images::cached(path, || client.download_thumbnail(&wanted).map_err(|e| e.to_string())))
         })
     }
 
@@ -256,13 +256,13 @@ impl CrossWall {
         if self.pending.contains(&photo.id) {
             ui.spinner();
             ui.label("Saving");
-        } else if self.is_liked(photo.id) {
+        } else if self.is_liked(&photo.id) {
             if ui.button("Unlike").clicked() {
-                self.pending.insert(photo.id);
-                let _ = self.librarian.commands.send(Command::Unlike(photo.id));
+                self.pending.insert(photo.id.clone());
+                let _ = self.librarian.commands.send(Command::Unlike(photo.id.clone()));
             }
         } else if primary_button(ui, "Like").clicked() {
-            self.pending.insert(photo.id);
+            self.pending.insert(photo.id.clone());
             let _ = self.librarian.commands.send(Command::Like(self.client.clone(), photo.clone()));
         }
     }
@@ -275,7 +275,7 @@ impl CrossWall {
         let tx = self.applied_tx.clone();
         let client = self.client.clone();
         let url = photo.src.original.clone();
-        let liked = self.is_liked(photo.id).then(|| self.library.image(photo.id));
+        let liked = self.is_liked(&photo.id).then(|| self.library.image(&photo.id));
         let folder = self.wallpaper_dir.clone();
         let target = folder.join(format!("{}.jpg", photo.id));
         std::thread::spawn(move || {
@@ -318,15 +318,22 @@ impl CrossWall {
     }
 
     fn browse_ui(&mut self, ui: &mut egui::Ui) {
-        if self.settings.pexels_key.is_empty() {
-            ui.label("Enter your Pexels API key in Settings to browse.");
-            return;
+        let locked = self.browse.source.needs_key() && self.settings.pexels_key.is_empty();
+        if !locked {
+            self.browse.start_once(&self.client);
         }
-        self.browse.start_once(&self.client);
+        let mut source_changed = false;
         ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("source").selected_text(self.browse.source.name()).show_ui(ui, |ui| {
+                for source in Source::ALL {
+                    source_changed |= ui.selectable_value(&mut self.browse.source, source, source.name()).changed();
+                }
+            });
             let reserved = 300.0;
             let width = (ui.available_width() - reserved).max(120.0);
-            let edit = ui.add(egui::TextEdit::singleline(&mut self.browse.text).hint_text("Search photos").desired_width(width));
+            let searchable = self.browse.source.has_search();
+            let hint = if searchable { "Search photos" } else { "This source has no search" };
+            let edit = ui.add_enabled(searchable, egui::TextEdit::singleline(&mut self.browse.text).hint_text(hint).desired_width(width));
             let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             egui::ComboBox::from_id_salt("orientation")
                 .selected_text(orientation_name(self.browse.orientation))
@@ -335,11 +342,20 @@ impl CrossWall {
                         ui.selectable_value(&mut self.browse.orientation, o, orientation_name(o));
                     }
                 });
-            if primary_button(ui, "Search").clicked() || entered {
+            let locked = self.browse.source.needs_key() && self.settings.pexels_key.is_empty();
+            if primary_button(ui, "Search").clicked() || entered || source_changed {
                 self.images.forget("thumb/");
-                self.browse.search(&self.client);
+                if locked {
+                    self.browse.clear();
+                } else {
+                    self.browse.search(&self.client);
+                }
             }
         });
+        if self.browse.source.needs_key() && self.settings.pexels_key.is_empty() {
+            ui.label("Pexels needs a free API key. Enter one in Settings, or pick another source.");
+            return;
+        }
         if !self.browse.message.is_empty() {
             ui.label(self.browse.message.clone());
         }
@@ -354,7 +370,8 @@ impl CrossWall {
                     self.browse.load_more(&self.client);
                 }
                 ui.add_space(4.0);
-                ui.hyperlink_to(egui::RichText::new("Photos provided by Pexels").small(), "https://www.pexels.com");
+                let source = self.browse.source;
+                ui.hyperlink_to(egui::RichText::new(format!("Photos provided by {}", source.name())).small(), source.home());
             });
         });
     }
@@ -396,7 +413,7 @@ impl CrossWall {
         match self.thumb_slot(photo) {
             Slot::Ready(texture) => {
                 let uv = images::cover_uv(texture.size(), size);
-                let image = egui::Image::new(texture).uv(uv).corner_radius(radius);
+                let image = egui::Image::new(texture).uv(uv).corner_radius(radius).maintain_aspect_ratio(false);
                 ui.put(rect, image.fit_to_exact_size(size));
             }
             Slot::Loading => {
@@ -418,7 +435,7 @@ impl CrossWall {
         let Some(photo) = self.preview.clone() else { return };
         let (client, url, path) =
             (self.client.clone(), photo.src.large2x.clone(), self.cache.join(format!("{}-large.jpg", photo.id)));
-        let liked_image = self.is_liked(photo.id).then(|| self.library.image(photo.id));
+        let liked_image = self.is_liked(&photo.id).then(|| self.library.image(&photo.id));
         let screen = ctx.screen_rect().size();
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::new("preview")).show(ctx, |ui| {
@@ -445,8 +462,13 @@ impl CrossWall {
             ui.horizontal(|ui| {
                 ui.label("Photo by");
                 ui.hyperlink_to(&photo.photographer, &photo.photographer_url);
-                ui.weak(format!("{} x {}", photo.width, photo.height));
-                ui.hyperlink_to("View on Pexels", &photo.url);
+                if photo.width > 0 {
+                    ui.weak(format!("{} x {}", photo.width, photo.height));
+                }
+                if !photo.license.is_empty() {
+                    ui.weak(&photo.license);
+                }
+                ui.hyperlink_to("View at the source", &photo.url);
             });
             ui.horizontal(|ui| {
                 self.like_button(ui, &photo);

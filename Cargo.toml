@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/cross-wall/host", "crates/pexels", "crates/library", "crates/apply", "xtask"]
+members = ["apps/cross-wall/host", "crates/sources", "crates/library", "crates/apply", "xtask"]
 exclude = ["vendor/bones", "vendor/bones/crates/bones-messages"]
 
 # SDL3's build script derives its cmake build type from these. A Debug SDL on

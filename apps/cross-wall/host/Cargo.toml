@@ -21,7 +21,7 @@ arboard = "3"
 open = "5"
 cross-wall-apply = { path = "../../../crates/apply" }
 cross-wall-library = { path = "../../../crates/library" }
-cross-wall-pexels = { path = "../../../crates/pexels" }
+cross-wall-sources = { path = "../../../crates/sources" }
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 serde = { version = "1", features = ["derive"] }

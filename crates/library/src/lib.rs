@@ -2,12 +2,12 @@
 //!
 //! Both folders have the same layout: `likes/<id>.json`, `images/<id>.jpg`, and
 //! `removed/<id>.json`. For one photo the newest of its like and its removal
-//! wins, with a removal winning a tie. Names that are not `<id>.json`, such as a
+//! wins, with a removal winning a tie. Names outside the ID alphabet, such as a
 //! sync tool's conflict copies and temporary files, are ignored.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use cross_wall_pexels::Photo;
+use cross_wall_sources::Photo;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,15 +38,15 @@ impl Library {
     /// Records a like once its image is complete. The entry is written after
     /// the image, so an interrupted write never appears as liked.
     pub fn like(&self, photo: &Photo, image: &[u8], now: u64) -> Result<(), String> {
-        write_atomic(&image_path(&self.local, photo.id), image)?;
+        write_atomic(&image_path(&self.local, &photo.id), image)?;
         let like = Like { photo: photo.clone(), liked_at: now, image_bytes: image.len() as u64 };
-        write_json(&self.local.join("likes").join(entry_name(photo.id)), &like)?;
+        write_json(&self.local.join("likes").join(entry_name(&photo.id)), &like)?;
         // An older removal would otherwise still be read next to a newer like: harmless, but untidy.
-        let _ = std::fs::remove_file(self.local.join("removed").join(entry_name(photo.id)));
+        let _ = std::fs::remove_file(self.local.join("removed").join(entry_name(&photo.id)));
         Ok(())
     }
 
-    pub fn unlike(&self, id: u64, now: u64) -> Result<(), String> {
+    pub fn unlike(&self, id: &str, now: u64) -> Result<(), String> {
         write_json(&self.local.join("removed").join(entry_name(id)), &Removal { removed_at: now })?;
         delete_like(&self.local, id)
     }
@@ -61,11 +61,11 @@ impl Library {
         likes
     }
 
-    pub fn image(&self, id: u64) -> PathBuf {
+    pub fn image(&self, id: &str) -> PathBuf {
         image_path(&self.local, id)
     }
 
-    pub fn is_liked(&self, id: u64) -> bool {
+    pub fn is_liked(&self, id: &str) -> bool {
         self.list().iter().any(|like| like.photo.id == id)
     }
 
@@ -81,12 +81,13 @@ impl Library {
         let (a, b) = (self.local.as_path(), shared.as_path());
         let (likes_a, likes_b) = (likes_in(a), likes_in(b));
         let (gone_a, gone_b) = (removals_in(a), removals_in(b));
-        let mut ids: Vec<u64> = likes_a.keys().chain(likes_b.keys()).chain(gone_a.keys()).chain(gone_b.keys()).copied().collect();
+        let mut ids: Vec<String> = likes_a.keys().chain(likes_b.keys()).chain(gone_a.keys()).chain(gone_b.keys()).cloned().collect();
         ids.sort_unstable();
         ids.dedup();
         for id in ids {
-            let (like_a, like_b) = (likes_a.get(&id), likes_b.get(&id));
-            let removal = [gone_a.get(&id), gone_b.get(&id)].into_iter().flatten().map(|r| r.removed_at).max();
+            let id = id.as_str();
+            let (like_a, like_b) = (likes_a.get(id), likes_b.get(id));
+            let removal = [gone_a.get(id), gone_b.get(id)].into_iter().flatten().map(|r| r.removed_at).max();
             let liked_at = [like_a, like_b].into_iter().flatten().map(|l| l.liked_at).max();
             match (removal, liked_at) {
                 (Some(removed_at), liked_at) if liked_at.is_none_or(|at| removed_at >= at) => {
@@ -116,21 +117,21 @@ fn copy_newer(from: &Path, like: Option<&Like>, to: &Path, there: Option<&Like>)
     if there.is_some_and(|t| t.liked_at >= like.liked_at && image_is_complete(to, t)) || !image_is_complete(from, like) {
         return Ok(());
     }
-    let id = like.photo.id;
+    let id = like.photo.id.as_str();
     let image = std::fs::read(image_path(from, id)).map_err(|e| e.to_string())?;
     write_atomic(&image_path(to, id), &image)?;
     write_json(&to.join("likes").join(entry_name(id)), like)
 }
 
-fn likes_in(root: &Path) -> BTreeMap<u64, Like> {
+fn likes_in(root: &Path) -> BTreeMap<String, Like> {
     read_entries(&root.join("likes"))
 }
 
-fn removals_in(root: &Path) -> BTreeMap<u64, Removal> {
+fn removals_in(root: &Path) -> BTreeMap<String, Removal> {
     read_entries(&root.join("removed"))
 }
 
-fn delete_like(root: &Path, id: u64) -> Result<(), String> {
+fn delete_like(root: &Path, id: &str) -> Result<(), String> {
     for path in [root.join("likes").join(entry_name(id)), image_path(root, id)] {
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{}: {e}", path.display())),
@@ -141,18 +142,18 @@ fn delete_like(root: &Path, id: u64) -> Result<(), String> {
 }
 
 fn image_is_complete(root: &Path, like: &Like) -> bool {
-    std::fs::metadata(image_path(root, like.photo.id)).is_ok_and(|m| m.len() == like.image_bytes)
+    std::fs::metadata(image_path(root, &like.photo.id)).is_ok_and(|m| m.len() == like.image_bytes)
 }
 
-fn image_path(root: &Path, id: u64) -> PathBuf {
+fn image_path(root: &Path, id: &str) -> PathBuf {
     root.join("images").join(format!("{id}.jpg"))
 }
 
-fn entry_name(id: u64) -> String {
+fn entry_name(id: &str) -> String {
     format!("{id}.json")
 }
 
-fn read_entries<T: serde::de::DeserializeOwned>(dir: &Path) -> BTreeMap<u64, T> {
+fn read_entries<T: serde::de::DeserializeOwned>(dir: &Path) -> BTreeMap<String, T> {
     let mut entries = BTreeMap::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -160,7 +161,8 @@ fn read_entries<T: serde::de::DeserializeOwned>(dir: &Path) -> BTreeMap<u64, T> 
             .file_name()
             .and_then(|n| n.to_str())
             .and_then(|n| n.strip_suffix(".json"))
-            .and_then(|n| n.parse::<u64>().ok());
+            .filter(|n| is_entry_id(n))
+            .map(String::from);
         // An unreadable entry may still be arriving, so it is skipped until a later sync.
         let value = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
         if let (Some(id), Some(value)) = (id, value) {
@@ -168,6 +170,12 @@ fn read_entries<T: serde::de::DeserializeOwned>(dir: &Path) -> BTreeMap<u64, T> 
         }
     }
     entries
+}
+
+/// Excludes conflict copies and anything else this app did not name, and any
+/// name that could reach outside the folder.
+fn is_entry_id(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -185,12 +193,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cross_wall_pexels::Sources;
+    use cross_wall_sources::Sources;
 
     fn photo(id: u64) -> Photo {
         let s = String::new;
         Photo {
-            id,
+            id: id.to_string(),
+            license: s(),
             width: 1,
             height: 1,
             url: s(),
@@ -216,7 +225,7 @@ mod tests {
         Pair { _dir: dir, a, b, shared }
     }
     fn ids(l: &Library) -> Vec<u64> {
-        let mut v: Vec<u64> = l.list().iter().map(|x| x.photo.id).collect();
+        let mut v: Vec<u64> = l.list().iter().map(|x| x.photo.id.parse().unwrap()).collect();
         v.sort();
         v
     }
@@ -233,7 +242,7 @@ mod tests {
         p.a.like(&photo(1), b"img", 10).unwrap();
         sync_all(&p);
         assert_eq!(ids(&p.b), [1]);
-        assert_eq!(std::fs::read(p.b.image(1)).unwrap(), b"img");
+        assert_eq!(std::fs::read(p.b.image("1")).unwrap(), b"img");
     }
 
     #[test]
@@ -251,10 +260,10 @@ mod tests {
         let p = pair();
         p.a.like(&photo(1), b"x", 10).unwrap();
         sync_all(&p);
-        p.b.unlike(1, 20).unwrap();
+        p.b.unlike("1", 20).unwrap();
         sync_all(&p);
         assert!(ids(&p.a).is_empty() && ids(&p.b).is_empty());
-        assert!(!p.a.image(1).exists());
+        assert!(!p.a.image("1").exists());
     }
 
     #[test]
@@ -262,11 +271,11 @@ mod tests {
         let p = pair();
         p.a.like(&photo(1), b"x", 10).unwrap();
         sync_all(&p);
-        p.b.unlike(1, 20).unwrap();
+        p.b.unlike("1", 20).unwrap();
         p.a.like(&photo(1), b"x", 30).unwrap();
         sync_all(&p);
         assert_eq!(ids(&p.b), [1]);
-        p.a.unlike(1, 40).unwrap();
+        p.a.unlike("1", 40).unwrap();
         p.b.like(&photo(1), b"x", 35).unwrap();
         sync_all(&p);
         assert!(ids(&p.b).is_empty());
@@ -289,7 +298,7 @@ mod tests {
     fn a_like_without_its_image_is_not_listed() {
         let p = pair();
         p.a.like(&photo(1), b"x", 10).unwrap();
-        std::fs::remove_file(p.a.image(1)).unwrap();
+        std::fs::remove_file(p.a.image("1")).unwrap();
         assert!(ids(&p.a).is_empty());
     }
 

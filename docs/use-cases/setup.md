@@ -1,11 +1,11 @@
 # Setup
 
-### UC-SETUP-01: Enter my Pexels API key
+### UC-SETUP-01: Add my optional Pexels API key
 
 - **Actor**: Wallpaper user.
-- **Goal**: Let the app reach Pexels with my own free key.
+- **Goal**: Also browse Pexels, the one source that needs a free key.
 - **Flow**: Open Settings, paste the key, and save.
-- **Success**: Browse shows photos. A rejected key shows a message saying so. The key is not in the sync folder.
+- **Success**: Choosing Pexels in Browse shows photos. A rejected key shows a message saying so. The key is not in the sync folder.
 
 ### UC-SETUP-02: Choose my sync folder
 

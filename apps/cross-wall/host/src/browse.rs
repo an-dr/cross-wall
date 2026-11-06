@@ -2,15 +2,17 @@
 //! replaced query harmless, because network replies arrive in any order.
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use cross_wall_pexels::{Client, Error, Orientation, Page, Photo};
+use cross_wall_sources::{Client, Error, Orientation, Page, Photo, Source};
 
 #[derive(Clone, PartialEq, Default)]
 struct Query {
+    source: Source,
     text: String,
     orientation: Orientation,
 }
 
 pub struct Browse {
+    pub source: Source,
     pub text: String,
     pub orientation: Orientation,
     query: Query,
@@ -29,6 +31,7 @@ impl Browse {
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
+            source: Source::default(),
             text: String::new(),
             orientation: Orientation::Any,
             query: Query::default(),
@@ -50,11 +53,11 @@ impl Browse {
         }
     }
 
-    /// Replaces the results with the current text and orientation. Empty text means curated.
+    /// Replaces the results with the current text and orientation. Empty text means the source's own selection.
     pub fn search(&mut self, client: &Client) {
         self.started = true;
         self.generation += 1;
-        self.query = Query { text: self.text.trim().to_string(), orientation: self.orientation };
+        self.query = Query { source: self.source, text: self.text.trim().to_string(), orientation: self.orientation };
         self.photos.clear();
         self.page = 0;
         self.has_more = false;
@@ -67,11 +70,7 @@ impl Browse {
         let (tx, generation, query, page) = (self.tx.clone(), self.generation, self.query.clone(), self.page + 1);
         let client = client.clone();
         std::thread::spawn(move || {
-            let answer = if query.text.is_empty() {
-                client.curated(page)
-            } else {
-                client.search(&query.text, query.orientation, page)
-            };
+            let answer = client.search(query.source, &query.text, query.orientation, page);
             let _ = tx.send((generation, answer));
         });
     }
@@ -90,7 +89,7 @@ impl Browse {
         match answer {
             Ok(page) => {
                 self.page += 1;
-                self.has_more = page.next_page.is_some();
+                self.has_more = page.has_more;
                 self.photos.extend(page.photos);
                 if self.photos.is_empty() {
                     self.message = "No photos found.".into();
@@ -98,6 +97,13 @@ impl Browse {
             }
             Err(error) => self.message = error.to_string(),
         }
+    }
+
+    /// Empties the results for a source that cannot be searched yet.
+    pub fn clear(&mut self) {
+        self.reset();
+        self.photos.clear();
+        self.has_more = false;
     }
 
     /// Lets a changed API key be tried at once.
@@ -114,18 +120,17 @@ mod tests {
     use super::*;
 
     fn page(ids: &[u64], more: bool) -> Result<Page, Error> {
-        let json = format!(
-            r#"{{"photos":[{}],"next_page":{}}}"#,
-            ids.iter()
-                .map(|id| format!(
+        let photos = ids
+            .iter()
+            .map(|id| {
+                serde_json::from_str(&format!(
                     r#"{{"id":{id},"width":1,"height":1,"url":"u","photographer":"p","photographer_url":"u",
                     "src":{{"original":"o","large2x":"l","medium":"m"}}}}"#
                 ))
-                .collect::<Vec<_>>()
-                .join(","),
-            if more { "\"n\"" } else { "null" },
-        );
-        Ok(serde_json::from_str(&json).unwrap())
+                .unwrap()
+            })
+            .collect();
+        Ok(Page { photos, has_more: more })
     }
 
     #[test]
