@@ -4,12 +4,14 @@
 //! are never listed, which keeps this app's own files out of the library.
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use cross_wall_sources::Photo;
 use serde::{Deserialize, Serialize};
 
 const METADATA: &str = ".cross-wall.json";
+/// How long one scan may spend reading image sizes, so other work gets a turn.
+const SIZE_BUDGET: Duration = Duration::from_millis(150);
 const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "bmp"];
 /// Characters Windows refuses, refused everywhere so a folder can move between systems.
 const FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
@@ -101,12 +103,13 @@ pub struct WallpaperFolder {
     root: PathBuf,
     /// Image sizes by path and modification time, so a rescan only reads what changed.
     sizes: HashMap<String, (SystemTime, u32, u32)>,
+    scan_complete: bool,
 }
 
 impl WallpaperFolder {
     /// Refuses a missing folder rather than creating it: it may be an unmounted drive.
     pub fn open(root: PathBuf) -> Result<Self, String> {
-        let folder = Self { root, sizes: HashMap::new() };
+        let folder = Self { root, sizes: HashMap::new(), scan_complete: false };
         folder.check_available()?;
         Ok(folder)
     }
@@ -119,8 +122,20 @@ impl WallpaperFolder {
         }
     }
 
+    /// Whether the last scan read every image size. If not, scan again for the rest.
+    pub fn is_scan_complete(&self) -> bool {
+        self.scan_complete
+    }
+
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
+        self.snapshot_within(SIZE_BUDGET)
+    }
+
+    /// Images whose size was not reached in time list with size zero for now.
+    pub fn snapshot_within(&mut self, budget: Duration) -> Result<Snapshot, String> {
         self.check_available()?;
+        let deadline = Instant::now() + budget;
+        let mut complete = true;
         let metadata = self.read_metadata();
         let mut snapshot = Snapshot::default();
         let mut pending = vec![String::new()];
@@ -140,17 +155,29 @@ impl WallpaperFolder {
                     snapshot.folders.push(path);
                 } else if is_image(&name) {
                     let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-                    let (width, height) = match self.sizes.get(&path) {
-                        Some(&(at, width, height)) if at == modified => (width, height),
-                        _ => image::image_dimensions(entry.path()).unwrap_or((0, 0)),
+                    let known = self.sizes.get(&path).filter(|s| s.0 == modified).map(|s| (s.1, s.2));
+                    let (width, height) = match known {
+                        Some(size) => {
+                            seen.insert(path.clone(), (modified, size.0, size.1));
+                            size
+                        }
+                        None if Instant::now() < deadline => {
+                            let size = image::image_dimensions(entry.path()).unwrap_or((0, 0));
+                            seen.insert(path.clone(), (modified, size.0, size.1));
+                            size
+                        }
+                        None => {
+                            complete = false;
+                            (0, 0)
+                        }
                     };
-                    seen.insert(path.clone(), (modified, width, height));
                     let info = metadata.files.get(&path).cloned().unwrap_or_default();
                     snapshot.files.push(Entry { path, width, height, info });
                 }
             }
         }
         self.sizes = seen;
+        self.scan_complete = complete;
         snapshot.folders.sort();
         snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(snapshot)
@@ -160,9 +187,8 @@ impl WallpaperFolder {
     /// moved to, is not saved twice. Returns the path. The image is complete before
     /// it takes its name, so an interrupted write never appears in the library.
     pub fn add_photo(&mut self, photo: &Photo, image: &[u8], liked: bool, now: u64) -> Result<String, String> {
-        let snapshot = self.snapshot()?;
-        if let Some(existing) = snapshot.find_photo(&photo.id) {
-            let path = existing.path.clone();
+        self.check_available()?;
+        if let Some(path) = self.kept_path(&photo.id) {
             if liked {
                 self.set_liked(&path, true)?;
             }
@@ -183,15 +209,24 @@ impl WallpaperFolder {
         Ok(name)
     }
 
+    /// Where a source photo is kept, from the metadata alone, so no scan is needed.
+    fn kept_path(&self, id: &str) -> Option<String> {
+        let metadata = self.read_metadata();
+        metadata
+            .files
+            .into_iter()
+            .find(|(path, info)| info.photo.as_ref().is_some_and(|p| p.id == id) && self.root.join(path).is_file())
+            .map(|(path, _)| path)
+    }
+
     /// Whether this source photo is already kept, so a caller can skip downloading it.
-    pub fn has_photo(&mut self, id: &str) -> bool {
-        self.snapshot().is_ok_and(|s| s.find_photo(id).is_some())
+    pub fn has_photo(&self, id: &str) -> bool {
+        self.kept_path(id).is_some()
     }
 
     /// Records a like on a kept photo without any image bytes.
     pub fn like_kept_photo(&mut self, id: &str) -> Result<(), String> {
-        let snapshot = self.snapshot()?;
-        let path = snapshot.find_photo(id).map(|e| e.path.clone()).ok_or("That photo is no longer in the folder.")?;
+        let path = self.kept_path(id).ok_or("That photo is no longer in the folder.")?;
         self.set_liked(&path, true)
     }
 

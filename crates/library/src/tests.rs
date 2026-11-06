@@ -168,6 +168,16 @@ fn a_missing_folder_is_an_error_and_is_not_created() {
 }
 
 #[test]
+fn a_scan_out_of_time_lists_everything_and_finishes_later() {
+    let (dir, mut f) = setup();
+    image::RgbImage::new(4, 3).save(dir.path().join("real.png")).unwrap();
+    let first = f.snapshot_within(Duration::ZERO).unwrap();
+    assert_eq!((first.files[0].width, f.is_scan_complete()), (0, false));
+    let second = f.snapshot_within(Duration::from_secs(5)).unwrap();
+    assert_eq!((second.files[0].width, f.is_scan_complete()), (4, true));
+}
+
+#[test]
 fn image_sizes_are_read_and_a_corrupt_image_still_lists() {
     let (dir, mut f) = setup();
     image::RgbImage::new(4, 3).save(dir.path().join("real.png")).unwrap();
