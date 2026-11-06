@@ -13,7 +13,7 @@ const MAX_THUMBNAIL: u32 = 640;
 const MAX_PREVIEW: u32 = 2560;
 const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-type Bytes = Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>;
+pub type Bytes = Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>;
 type Decoded = Result<egui::ColorImage, String>;
 
 /// Newest first: what is on screen now was asked for last, and should not wait
@@ -92,8 +92,29 @@ impl Images {
         &self.slots[key]
     }
 
+    pub fn is_known(&self, key: &str) -> bool {
+        self.slots.contains_key(key)
+    }
+
+    /// Starts loading in the background queue, for images not needed yet.
+    pub fn preload(&mut self, key: &str, bytes: impl FnOnce() -> Bytes) {
+        if !self.slots.contains_key(key) {
+            self.jobs.push((key.to_string(), bytes()));
+            self.slots.insert(key.to_string(), Slot::Loading);
+        }
+    }
+
+    /// Frees full-size images other than those named.
+    pub fn retain_large(&mut self, keep: &std::collections::HashSet<String>) {
+        self.slots.retain(|key, _| !key.starts_with("large/") || keep.contains(key));
+    }
+
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((key, decoded)) = self.done.try_recv() {
+            // Forgotten while it loaded: keeping it would hold a texture nobody can free.
+            if !self.slots.contains_key(&key) {
+                continue;
+            }
             let slot = match decoded {
                 Ok(image) => Slot::Ready(ctx.load_texture(&key, image, egui::TextureOptions::LINEAR)),
                 Err(error) => Slot::Failed(error),
@@ -221,6 +242,17 @@ mod tests {
         let mut png = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(100, 50).write_to(&mut png, image::ImageFormat::Png).unwrap();
         assert_eq!(decode(png.get_ref(), 20).unwrap().size, [20, 10]);
+    }
+
+    #[test]
+    fn an_image_forgotten_while_loading_is_dropped() {
+        let ctx = egui::Context::default();
+        let mut images = Images::new();
+        images.get("large/a", || Box::new(|| Err("x".into())));
+        images.retain_large(&std::collections::HashSet::new());
+        std::thread::sleep(Duration::from_millis(100));
+        images.poll(&ctx);
+        assert!(images.slots.is_empty());
     }
 
     #[test]

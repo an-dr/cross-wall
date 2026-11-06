@@ -66,7 +66,11 @@ impl CrossWall {
             super::empty_state(ui, "🖼", "This folder is empty", "Download wallpapers from Browse, or add images with your file manager.");
             return;
         }
+        let view = format!("{}/{}", self.settings.library_groups, self.current_folder);
+        let appear = self.transition(ui.ctx(), "library-view", view);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.set_opacity(appear);
+            ui.add_space((1.0 - appear) * 8.0);
             if self.settings.library_groups {
                 self.groups_view(ui);
             } else {
@@ -173,7 +177,7 @@ impl CrossWall {
 
     fn folder_chip(&mut self, ui: &mut egui::Ui, folder: &str) {
         let count = self.snapshot.files.iter().filter(|e| e.folder() == folder).count();
-        let text = format!("📁  {}  ·  {count}", file_name(folder));
+        let text = format!("🗀  {}  ·  {count}", file_name(folder));
         let button = egui::Button::new(text).min_size(egui::vec2(150.0, 44.0)).sense(egui::Sense::click());
         let response = ui.add(button);
         if response.clicked() {

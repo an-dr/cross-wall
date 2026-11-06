@@ -9,6 +9,7 @@ mod gallery;
 mod images;
 mod installation;
 mod librarian;
+mod logs;
 mod settings;
 mod theme;
 
@@ -54,7 +55,7 @@ fn main() {
 
 fn run() -> bones_kernel::Result<()> {
     installation::refresh_launcher();
-    let logger = Logger::default();
+    let logger = Logger::default().tee(std::sync::Arc::new(logs::FileSink));
     let (request_tx, request_rx) = channel();
     let (result_tx, result_rx) = channel();
     let screens = app::CrossWall::new(settings::settings_path(), settings::data_dir(), request_tx, result_rx);

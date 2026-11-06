@@ -2,7 +2,7 @@
 //! drained each frame, so the frame thread never waits on network or disk.
 mod library_view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use cross_wall_sources::{Client, MinSize, Orientation, Photo, Progress, Source};
 
 use library_view::{entry_photo, Dialog};
 
-use egui_animation::{animate_bool_eased, easing};
+use egui_animation::{animate_bool_eased, animate_eased, easing};
 
 use crate::browse::Browse;
 use crate::chrome;
@@ -23,6 +23,7 @@ use crate::gallery;
 use crate::images::{self, Images, Slot};
 use crate::installation::{self, UpdateState};
 use crate::librarian::{now, Command, Librarian};
+use crate::logs;
 use crate::settings::{Settings, ThemeMode};
 use crate::theme::{self, System};
 
@@ -33,8 +34,14 @@ const AUTO_LOAD_MARGIN: f32 = 500.0;
 const RESOLUTIONS: [(u32, u32); 5] = [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160), (5120, 2880)];
 const THEME_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 const SCALE_POLL: f64 = 1.0;
+/// Photos loaded ahead on each side of the open one.
+const PRELOAD_RADIUS: usize = 3;
+/// Short enough that nothing feels like it is waiting for the animation.
+const TRANSITION_SECONDS: f64 = 0.18;
+const NAV_ROW_HEIGHT: f32 = 40.0;
 
 #[derive(PartialEq, Clone, Copy)]
+#[repr(u8)]
 enum Tab {
     Browse,
     Library,
@@ -67,7 +74,15 @@ pub struct CrossWall {
     dialog: Option<Dialog>,
     picked_tx: Sender<Option<PathBuf>>,
     picked_rx: Receiver<Option<PathBuf>>,
-    preview_progress: (String, Arc<Progress>),
+    preview_progress: HashMap<String, Arc<Progress>>,
+    /// The direction and start time of the last step between photos.
+    preview_step: (f32, f64),
+    /// What the preview last drew, so it can fade out after closing.
+    preview_last: Option<(egui::TextureHandle, egui::Rect)>,
+    /// When each animated area last changed, and to what.
+    transitions: HashMap<&'static str, (String, f64)>,
+    /// The panel colour before a theme change, and when it changed.
+    theme_fade: Option<(egui::Color32, f64)>,
     apply_progress: Arc<Progress>,
     update_requests: Sender<Action>,
     update_results: Receiver<UpdateState>,
@@ -99,6 +114,7 @@ impl CrossWall {
         update_results: Receiver<UpdateState>,
     ) -> Self {
         let settings = Settings::load(&settings_path);
+        logs::set_enabled(settings.logging.unwrap_or_else(logs::default_enabled));
         let cache = data_dir.join("cache");
         let cache_to_prune = cache.clone();
         std::thread::spawn(move || images::prune_cache(&cache_to_prune));
@@ -143,7 +159,11 @@ impl CrossWall {
             dialog: None,
             picked_tx,
             picked_rx,
-            preview_progress: (String::new(), Arc::default()),
+            preview_progress: HashMap::new(),
+            preview_step: (0.0, f64::NEG_INFINITY),
+            preview_last: None,
+            transitions: HashMap::new(),
+            theme_fade: None,
             apply_progress: Arc::default(),
             tab,
             client: Client::new(),
@@ -232,7 +252,28 @@ impl CrossWall {
                 self.save_settings();
             }
             ui.add_space(8.0);
-            card(ui, "App", |ui| self.install_ui(ui));
+            card(ui, "App", |ui| {
+                self.install_ui(ui);
+                ui.add_space(4.0);
+                self.logging_ui(ui);
+            });
+        });
+    }
+
+    fn logging_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mut enabled = self.settings.logging.unwrap_or_else(logs::default_enabled);
+            if ui.checkbox(&mut enabled, "Write a log file for troubleshooting").changed() {
+                self.settings.logging = Some(enabled);
+                self.draft.logging = Some(enabled);
+                logs::set_enabled(enabled);
+                self.save_quietly();
+            }
+            if ui.button("Open log folder").clicked() {
+                let folder = crate::settings::data_dir();
+                let _ = std::fs::create_dir_all(&folder);
+                let _ = open::that_detached(folder);
+            }
         });
     }
 
@@ -355,6 +396,7 @@ impl CrossWall {
     }
 
     fn start_download(&mut self, photo: &Photo, liked: bool) {
+        logs::info("download", &format!("{} liked={liked}", photo.id));
         let progress = self.pending.get(&photo.id).cloned().unwrap_or_default();
         self.command(Command::Add { client: self.client.clone(), photo: photo.clone(), liked, progress });
     }
@@ -644,20 +686,18 @@ impl CrossWall {
     /// A full-window view that steps through the photos with the arrow keys.
     fn preview_ui(&mut self, ctx: &egui::Context) {
         let opened = animate_bool_eased(ctx, "preview-open", self.preview.is_some(), easing::cubic_out, 0.18);
-        let Some(photo) = self.preview.clone() else { return };
-        let (client, url, path) = (
-            self.client.clone(),
-            photo.src.large2x.clone(),
-            self.cache.join(format!("{}-large.jpg", photo.id.replace(['/', ':'], "_"))),
-        );
-        let local = self.local_file(&photo);
-        if self.preview_progress.0 != photo.id {
-            self.preview_progress = (photo.id.clone(), Arc::default());
-        }
-        let progress = self.preview_progress.1.clone();
-        let worker_progress = progress.clone();
+        let Some(photo) = self.preview.clone() else {
+            self.preview_fade_out(ctx, opened);
+            return;
+        };
+        let local = self.large_source(&photo);
+        let progress = self.preview_progress_for(&photo.id);
         let screen = ctx.screen_rect();
         let position = self.shown.iter().position(|p| p.id == photo.id);
+        self.preload_around(&photo, position);
+        let time = ctx.input(|i| i.time);
+        let stepped = eased_since(self.preview_step.1, time);
+        let step_offset = self.preview_step.0 * (1.0 - stepped) * 48.0;
         let mut step = ctx.input(|i| i32::from(i.key_pressed(egui::Key::ArrowRight)) - i32::from(i.key_pressed(egui::Key::ArrowLeft)));
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Area::new(egui::Id::new("preview")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
@@ -665,12 +705,7 @@ impl CrossWall {
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha((242.0 * opened) as u8));
             let stage = egui::Rect::from_min_max(screen.min + egui::vec2(64.0, 20.0), screen.max - egui::vec2(64.0, 76.0));
-            let slot = self.images.get(&format!("large/{}", photo.id), || {
-                Box::new(move || match local {
-                    Some(file) => std::fs::read(file).map_err(|e| e.to_string()),
-                    None => images::cached(path, || client.download_tracked(&url, &worker_progress).map_err(|e| e.to_string())),
-                })
-            });
+            let slot = self.images.get(&format!("large/{}", photo.id), || local);
             let large = match slot {
                 Slot::Ready(texture) => Some(texture.clone()),
                 Slot::Failed(error) => {
@@ -686,9 +721,12 @@ impl CrossWall {
             if let Some(texture) = large {
                 let size = texture.size_vec2();
                 let fit = (stage.width() / size.x).min(stage.height() / size.y);
-                let rect = egui::Rect::from_center_size(stage.center(), size * fit);
+                let grow = 0.97 + 0.03 * opened;
+                let centre = stage.center() + egui::vec2(step_offset, 0.0);
+                let rect = egui::Rect::from_center_size(centre, size * fit * grow);
+                self.preview_last = Some((texture.clone(), rect));
                 let radius = ui.visuals().widgets.inactive.corner_radius;
-                let tint = egui::Color32::WHITE.gamma_multiply(opened);
+                let tint = egui::Color32::WHITE.gamma_multiply(opened * stepped);
                 egui::Image::new(&texture).tint(tint).corner_radius(radius).maintain_aspect_ratio(false).paint_at(ui, rect);
             }
             let visuals = ui.visuals_mut();
@@ -738,10 +776,69 @@ impl CrossWall {
             .and_then(|p| p.checked_add_signed(step as isize))
             .filter(|_| step != 0)
             .and_then(|p| self.shown.get(p).cloned());
-        if close || next.is_some() {
+        if next.is_some() {
+            self.preview_step = (step.signum() as f32, time);
             self.preview = next;
-            self.images.forget(&format!("large/{}", photo.id));
+        } else if close {
+            self.preview = None;
+            self.images.retain_large(&HashSet::new());
+            self.preview_progress.clear();
         }
+    }
+
+    fn preview_progress_for(&mut self, id: &str) -> Arc<Progress> {
+        self.preview_progress.entry(id.to_string()).or_default().clone()
+    }
+
+    /// How to fetch a full-size image: the kept file, or the source through the cache.
+    fn large_source(&mut self, photo: &Photo) -> images::Bytes {
+        let progress = self.preview_progress_for(&photo.id);
+        let local = self.local_file(photo);
+        let client = self.client.clone();
+        let url = photo.src.large2x.clone();
+        let path = self.cache.join(format!("{}-large.jpg", photo.id.replace(['/', ':'], "_")));
+        Box::new(move || match local {
+            Some(file) => std::fs::read(file).map_err(|e| e.to_string()),
+            None => images::cached(path, || client.download_tracked(&url, &progress).map_err(|e| e.to_string())),
+        })
+    }
+
+    /// Loads the photos around the open one, so stepping to them is immediate,
+    /// and frees full-size images that have left that range.
+    fn preload_around(&mut self, photo: &Photo, position: Option<usize>) {
+        let around: Vec<Photo> = position
+            .map(|p| gallery::neighbours(p, self.shown.len(), PRELOAD_RADIUS))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|index| self.shown[index].clone())
+            .collect();
+        let mut keep: HashSet<String> = around.iter().map(|p| format!("large/{}", p.id)).collect();
+        keep.insert(format!("large/{}", photo.id));
+        self.images.retain_large(&keep);
+        self.preview_progress.retain(|id, _| keep.contains(&format!("large/{id}")));
+        // The queue runs newest first, so the farthest goes in first.
+        for neighbour in around.iter().rev() {
+            let key = format!("large/{}", neighbour.id);
+            if !self.images.is_known(&key) {
+                let source = self.large_source(neighbour);
+                self.images.preload(&key, || source);
+            }
+        }
+    }
+
+    /// Lets the last photo and the backdrop fade away after closing.
+    fn preview_fade_out(&mut self, ctx: &egui::Context, opened: f32) {
+        if opened <= 0.0 {
+            self.preview_last = None;
+            return;
+        }
+        let Some((texture, rect)) = self.preview_last.clone() else { return };
+        egui::Area::new(egui::Id::new("preview-closing")).order(egui::Order::Foreground).interactable(false).fixed_pos(ctx.screen_rect().min).show(ctx, |ui| {
+            let screen = ctx.screen_rect();
+            ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha((242.0 * opened) as u8));
+            let tint = egui::Color32::WHITE.gamma_multiply(opened);
+            egui::Image::new(&texture).tint(tint).maintain_aspect_ratio(false).paint_at(ui, rect);
+        });
     }
 
     /// Shows the latest message over the window for a few seconds.
@@ -749,6 +846,8 @@ impl CrossWall {
         let time = ctx.input(|i| i.time);
         if self.applying {
             self.status = progress_text(self.apply_progress.read(), "Applying wallpaper");
+        } else if self.status != self.toast.0 && !self.status.is_empty() {
+            logs::info("status", &self.status);
         }
         if self.status != self.toast.0 {
             self.toast = (self.status.clone(), time);
@@ -760,10 +859,13 @@ impl CrossWall {
             self.status.clear();
             return;
         }
+        let phase_key = if self.applying { "applying".to_string() } else { self.status.clone() };
+        let appear = self.transition(ctx, "toast", phase_key);
         egui::Area::new(egui::Id::new("toast"))
             .order(egui::Order::Tooltip)
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0 + (1.0 - appear) * 12.0))
             .show(ctx, |ui| {
+                ui.set_opacity(appear);
                 egui::Frame::popup(ui.style()).inner_margin(10).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(&self.status);
@@ -774,9 +876,74 @@ impl CrossWall {
                 });
             });
     }
-    fn apply_theme(&self, ctx: &egui::Context) {
+    /// Progress from 0 to 1 since `key` last changed for this area, eased.
+    fn transition(&mut self, ctx: &egui::Context, area: &'static str, key: String) -> f32 {
+        let time = ctx.input(|i| i.time);
+        let entry = self.transitions.entry(area).or_insert_with(|| (key.clone(), f64::NEG_INFINITY));
+        if entry.0 != key {
+            *entry = (key, time);
+        }
+        eased_since(entry.1, time)
+    }
+
+    fn apply_theme(&mut self, ctx: &egui::Context) {
         let dark = theme::resolve_dark(self.settings.theme, self.system);
+        let before = ctx.style().visuals.clone();
+        if before.dark_mode != dark {
+            self.theme_fade = Some((before.panel_fill, ctx.input(|i| i.time)));
+        }
         theme::apply(ctx, self.desktop, System { dark, ..self.system });
+    }
+
+    /// Covers the window in the old colour and lifts it, so a theme change is not a flash.
+    fn theme_fade_ui(&mut self, ctx: &egui::Context) {
+        let Some((colour, started)) = self.theme_fade else { return };
+        let progress = eased_since(started, ctx.input(|i| i.time));
+        if progress >= 1.0 {
+            self.theme_fade = None;
+            return;
+        }
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("theme-fade"));
+        ctx.layer_painter(layer).rect_filled(ctx.screen_rect(), 0.0, colour.gamma_multiply(1.0 - progress));
+    }
+
+    /// The side navigation, with one highlight that slides between items.
+    fn navigation_ui(&mut self, ui: &mut egui::Ui) {
+        let liked = self.snapshot.files.iter().filter(|e| e.info.liked).count();
+        let items = [
+            (Tab::Browse, "🖼  Browse".to_string()),
+            (Tab::Library, format!("🗀  Library  ·  {}", self.snapshot.files.len())),
+            (Tab::Liked, format!("♥  Liked  ·  {liked}")),
+            (Tab::Settings, "⚙  Settings".to_string()),
+        ];
+        let selected = items.iter().position(|item| item.0 == self.tab).unwrap_or(0);
+        let position = animate_eased(ui.ctx(), "nav-highlight", selected as f32, TRANSITION_SECONDS as f32, easing::cubic_out);
+        let width = ui.available_width();
+        let spacing = 4.0;
+        let top = ui.cursor().top();
+        let radius = ui.visuals().widgets.inactive.corner_radius;
+        let accent = ui.visuals().selection.bg_fill;
+        let highlight = egui::Rect::from_min_size(
+            egui::pos2(ui.cursor().left(), top + position * (NAV_ROW_HEIGHT + spacing)),
+            egui::vec2(width, NAV_ROW_HEIGHT),
+        );
+        let highlight_shape = ui.painter().add(egui::Shape::Noop);
+        for (index, (tab, label)) in items.iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(width, NAV_ROW_HEIGHT), egui::Sense::click());
+            if response.hovered() && index != selected {
+                ui.painter().rect_filled(rect, radius, ui.visuals().widgets.hovered.weak_bg_fill);
+            }
+            // The label turns as the highlight passes under it.
+            let over = 1.0 - (position - index as f32).abs().min(1.0);
+            let colour = ui.visuals().text_color().lerp_to_gamma(theme::on_colour(accent), over);
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            ui.painter().text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, label, font, colour);
+            if response.clicked() {
+                self.tab = *tab;
+            }
+            ui.add_space(spacing - ui.spacing().item_spacing.y);
+        }
+        ui.painter().set(highlight_shape, egui::Shape::rect_filled(highlight, radius, accent));
     }
 
     /// Follows mode, accent, and display changes while the app runs.
@@ -804,6 +971,11 @@ impl CrossWall {
             chrome::publish_scale(self.scale());
         }
     }
+}
+
+fn eased_since(started: f64, time: f64) -> f32 {
+    let linear = ((time - started) / TRANSITION_SECONDS).clamp(0.0, 1.0) as f32;
+    easing::cubic_out(linear)
 }
 
 /// "Saving 12.3 / 45.0 MB", or just the label until any bytes have arrived.
@@ -903,25 +1075,25 @@ impl App for CrossWall {
         }
         egui::SidePanel::left("navigation").resizable(false).show_separator_line(false).exact_width(180.0).frame(nav).show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.style_mut().spacing.button_padding.y += 4.0;
-            ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                ui.selectable_value(&mut self.tab, Tab::Browse, "🖼  Browse");
-                ui.selectable_value(&mut self.tab, Tab::Library, format!("📁  Library  ·  {}", self.snapshot.files.len()));
-                let liked = self.snapshot.files.iter().filter(|e| e.info.liked).count();
-                ui.selectable_value(&mut self.tab, Tab::Liked, format!("♥  Liked  ·  {liked}"));
-                ui.selectable_value(&mut self.tab, Tab::Settings, "⚙  Settings");
-            });
+            self.navigation_ui(ui);
         });
         let margin = egui::Frame::central_panel(&ctx.style()).inner_margin(16);
-        egui::CentralPanel::default().frame(margin).show(ctx, |ui| match self.tab {
-            Tab::Browse => self.browse_ui(ui),
-            Tab::Library => self.library_ui(ui),
-            Tab::Liked => self.liked_ui(ui),
-            Tab::Settings => self.settings_ui(ui),
+        let tab_key = format!("{}", self.tab as u8);
+        let appear = self.transition(ctx, "tab", tab_key);
+        egui::CentralPanel::default().frame(margin).show(ctx, |ui| {
+            ui.set_opacity(appear);
+            ui.add_space((1.0 - appear) * 10.0);
+            match self.tab {
+                Tab::Browse => self.browse_ui(ui),
+                Tab::Library => self.library_ui(ui),
+                Tab::Liked => self.liked_ui(ui),
+                Tab::Settings => self.settings_ui(ui),
+            }
         });
         self.preview_ui(ctx);
         self.dialog_ui(ctx);
         self.toast_ui(ctx);
+        self.theme_fade_ui(ctx);
     }
 
     fn scale(&self) -> f32 {

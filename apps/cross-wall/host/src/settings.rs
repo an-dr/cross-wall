@@ -24,11 +24,13 @@ pub struct Settings {
     pub ui_zoom: f32,
     /// `None` follows the main display. `[0, 0]` is any size.
     pub min_resolution: Option<[u32; 2]>,
+    /// `None` takes the build's default: off in release, on in development.
+    pub logging: Option<bool>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: ThemeMode::Dark, wallpaper_folder: String::new(), library_groups: false, ui_zoom: 1.0, min_resolution: None }
+        Self { theme: ThemeMode::Dark, wallpaper_folder: String::new(), library_groups: false, ui_zoom: 1.0, min_resolution: None, logging: None }
     }
 }
 
@@ -75,7 +77,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a/settings.json");
         assert_eq!(Settings::load(&path), Settings::default());
-        let settings = Settings { theme: ThemeMode::Light, wallpaper_folder: "f".into(), library_groups: true, ui_zoom: 1.5, min_resolution: Some([3840, 2160]) };
+        let settings = Settings { theme: ThemeMode::Light, wallpaper_folder: "f".into(), library_groups: true, ui_zoom: 1.5, min_resolution: Some([3840, 2160]), logging: Some(true) };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
         std::fs::write(&path, "{broken").unwrap();
