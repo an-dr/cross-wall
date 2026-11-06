@@ -1,0 +1,65 @@
+name: build
+
+# Each platform builds natively. A v<version> tag also publishes the zips and
+# manifests as a GitHub release, where the installed app looks for updates.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: windows-x64, os: windows-latest, arch: x64 }
+          - { platform: windows-arm64, os: windows-11-arm, arch: arm64 }
+          - { platform: linux-x64, os: ubuntu-latest, arch: x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build $(cd vendor/bones && cargo xtask linux-packages)
+      - name: Install Ninja
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+      # Ninja has no Visual Studio generator to find the compiler for it.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Test
+        run: cargo test --workspace
+      - name: Package
+        run: cargo xtask package --platform ${{ matrix.platform }} ${{ startsWith(github.ref, 'refs/tags/v') && format('--tag {0}', github.ref_name) || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-wall-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --generate-notes

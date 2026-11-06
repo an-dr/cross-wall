@@ -1,0 +1,40 @@
+# cross-wall
+
+Browse [Pexels](https://www.pexels.com) photos, keep the ones you like on all your computers, and set them as your wallpaper. Runs on Windows (x64, ARM64) and Linux (x64), and applies wallpapers on Windows, KDE Plasma, GNOME, and COSMIC. Built on [bones](https://github.com/an-dr/bones) with a native egui interface.
+
+## Install
+
+Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/an-dr/cross-wall/main/scripts/install.ps1 | iex
+```
+
+Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/an-dr/cross-wall/main/scripts/install.sh | sh
+```
+
+Both install for the current user into `~/.cross-wall`, with no administrator rights, and add the app to the application list. They need a published release. Update from Settings; remove the app with Unregister in Settings, then delete that folder. Your liked photos stay.
+
+## Build from source
+
+```sh
+git clone --recurse-submodules https://github.com/an-dr/cross-wall
+cargo run -p cross-wall-app
+```
+
+Needs a Rust toolchain, a C compiler, CMake, and Ninja, because bones builds SDL3 from source. On Linux, also the packages `cargo xtask linux-packages` in `vendor/bones` lists.
+
+## Use it
+
+You need a free [Pexels API key](https://www.pexels.com/api/). Enter it in Settings. To sync, set a sync folder there that Syncthing, Dropbox, OneDrive, or a similar tool keeps in sync; the app does not copy files between computers itself.
+
+## Documentation
+
+Start at [docs/index.md](docs/index.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE). Photos are provided by [Pexels](https://www.pexels.com).

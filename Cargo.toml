@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["apps/cross-wall/host", "crates/pexels", "crates/library", "crates/apply", "xtask"]
+exclude = ["vendor/bones", "vendor/bones/crates/bones-messages"]
+
+# SDL3's build script derives its cmake build type from these. A Debug SDL on
+# Windows links the debug CRT while rustc links the release one.
+[profile.dev.package.sdl3-sys]
+opt-level = 2
+debug = false
+
+[profile.dev.package.sdl3-image-sys]
+opt-level = 2
+debug = false

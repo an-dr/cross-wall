@@ -1,0 +1,3 @@
+[submodule "vendor/bones"]
+	path = vendor/bones
+	url = https://github.com/an-dr/bones.git
