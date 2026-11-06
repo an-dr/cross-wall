@@ -187,7 +187,7 @@ impl CrossWall {
         self.accept_drop(&response, folder);
         let dragging = response.dnd_hover_payload::<String>().is_some();
         if dragging {
-            let stroke = egui::Stroke::new(2.0, ui.visuals().selection.bg_fill);
+            let stroke = egui::Stroke::new(2.0_f32, ui.visuals().selection.bg_fill);
             ui.painter().rect_stroke(response.rect, 4.0, stroke, egui::StrokeKind::Inside);
         }
         response.context_menu(|ui| self.item_menu(ui, folder, true));
