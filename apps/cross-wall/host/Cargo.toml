@@ -32,6 +32,8 @@ egui_animation = "0.9.0"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
+egui-phosphor = { version = "0.10", default-features = false, features = ["regular", "fill"] }
+
 [build-dependencies]
 winresource = "0.1"
 

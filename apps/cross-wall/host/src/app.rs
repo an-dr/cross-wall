@@ -224,7 +224,7 @@ impl CrossWall {
             card(ui, "Wallpaper folder", |ui| {
                 ui.label("Downloads go to the root of this folder. Your images and subfolders in it appear in the Library.");
                 ui.horizontal(|ui| {
-                    if ui.button(icons::with(icons::CHOOSE, "Choose")).clicked() {
+                    if icons::button(ui, icons::CHOOSE, "Choose").clicked() {
                         self.pick_folder();
                     }
                     ui.add(egui::TextEdit::singleline(&mut self.draft.wallpaper_folder).desired_width(f32::INFINITY));
@@ -249,7 +249,7 @@ impl CrossWall {
                     ui.add(egui::Slider::new(&mut self.draft.ui_zoom, 0.5..=2.0));
                 });
             });
-            if primary_button(ui, &icons::with(icons::SAVE, "Save")).clicked() {
+            if icons::primary(ui, icons::SAVE, "Save").clicked() {
                 self.save_settings();
             }
             ui.add_space(8.0);
@@ -270,7 +270,7 @@ impl CrossWall {
                 logs::set_enabled(enabled);
                 self.save_quietly();
             }
-            if ui.button(icons::with(icons::CHOOSE, "Open log folder")).clicked() {
+            if icons::button(ui, icons::CHOOSE, "Open log folder").clicked() {
                 let folder = crate::settings::data_dir();
                 let _ = std::fs::create_dir_all(&folder);
                 let _ = open::that_detached(folder);
@@ -281,17 +281,17 @@ impl CrossWall {
     fn install_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(format!("Version {}", installation::VERSION));
         ui.horizontal(|ui| {
-            if ui.button(icons::with(icons::UPDATE, "Check for updates")).clicked() {
+            if icons::button(ui, icons::UPDATE, "Check for updates").clicked() {
                 self.status = "Checking for updates...".into();
                 let _ = self.update_requests.send(Action::Check);
             }
             if let Some(version) = self.update_available.clone() {
-                if primary_button(ui, &icons::with(icons::DOWNLOAD, &format!("Update to {version}"))).clicked() {
+                if icons::primary(ui, icons::DOWNLOAD, &format!("Update to {version}")).clicked() {
                     self.status = "Downloading the update...".into();
                     let _ = self.update_requests.send(Action::Stage);
                 }
             }
-            if !self.installed && ui.button(icons::with(icons::INSTALL, "Install")).clicked() {
+            if !self.installed && icons::button(ui, icons::INSTALL, "Install").clicked() {
                 self.status = "Installing...".into();
                 let _ = self.update_requests.send(Action::Install);
             }
@@ -382,15 +382,15 @@ impl CrossWall {
         }
         let kept = self.entry_for(photo).map(|e| (e.path.clone(), e.info.liked));
         let liked = kept.as_ref().is_some_and(|k| k.1);
-        let heart = if liked { icons::with(icons::LIKED, "Liked") } else { icons::with(icons::LIKE, "Like") };
-        if ui.button(heart).clicked() {
+        let (heart, heart_label) = if liked { (icons::LIKED, "Liked") } else { (icons::LIKE, "Like") };
+        if icons::button(ui, heart, heart_label).clicked() {
             self.pending.insert(photo.id.clone(), Arc::default());
             match &kept {
                 Some((path, liked)) => self.command(Command::SetLiked { path: path.clone(), liked: !liked, key: photo.id.clone() }),
                 None => self.start_download(photo, true),
             }
         }
-        if kept.is_none() && primary_button(ui, &icons::with(icons::DOWNLOAD, "Download")).clicked() {
+        if kept.is_none() && icons::primary(ui, icons::DOWNLOAD, "Download").clicked() {
             self.pending.insert(photo.id.clone(), Arc::default());
             self.start_download(photo, false);
         }
@@ -535,7 +535,7 @@ impl CrossWall {
         if self.browse.photos.is_empty() && !self.browse.message.is_empty() {
             let message = self.browse.message.clone();
             empty_state(ui, icons::BROWSE, "No wallpapers to show", &message);
-            if self.browse.has_more && centered_button(ui, &icons::with(icons::RETRY, "Try again")) {
+            if self.browse.has_more && centered_button(ui, icons::RETRY, "Try again") {
                 self.browse.load_more(&self.client);
             }
             return;
@@ -552,7 +552,7 @@ impl CrossWall {
             ui.vertical_centered(|ui| {
                 if self.browse.loading {
                     ui.spinner();
-                } else if self.browse.is_stalled() && ui.button(icons::with(icons::RETRY, "Try again")).clicked() {
+                } else if self.browse.is_stalled() && icons::button(ui, icons::RETRY, "Try again").clicked() {
                     self.browse.load_more(&self.client);
                 }
                 ui.add_space(4.0);
@@ -672,7 +672,7 @@ impl CrossWall {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.applying {
                         ui.spinner();
-                    } else if ui.button(icons::with(icons::APPLY, "Apply")).clicked() {
+                    } else if icons::button(ui, icons::APPLY, "Apply").clicked() {
                         self.start_apply(photo);
                     }
                     self.keep_buttons(ui, photo);
@@ -766,7 +766,7 @@ impl CrossWall {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.applying {
                         ui.spinner();
-                    } else if primary_button(ui, &icons::with(icons::APPLY, "Apply")).clicked() {
+                    } else if icons::primary(ui, icons::APPLY, "Apply").clicked() {
                         self.start_apply(&photo);
                     }
                     self.keep_buttons(ui, &photo);
@@ -912,10 +912,10 @@ impl CrossWall {
     fn navigation_ui(&mut self, ui: &mut egui::Ui) {
         let liked = self.snapshot.files.iter().filter(|e| e.info.liked).count();
         let items = [
-            (Tab::Browse, icons::with(icons::BROWSE, "Browse")),
-            (Tab::Library, icons::with(icons::LIBRARY, &format!("Library  ·  {}", self.snapshot.files.len()))),
-            (Tab::Liked, icons::with(icons::LIKED, &format!("Liked  ·  {liked}"))),
-            (Tab::Settings, icons::with(icons::SETTINGS, "Settings")),
+            (Tab::Browse, icons::BROWSE, "Browse".to_string()),
+            (Tab::Library, icons::LIBRARY, format!("Library  ·  {}", self.snapshot.files.len())),
+            (Tab::Liked, icons::LIKE, format!("Liked  ·  {liked}")),
+            (Tab::Settings, icons::SETTINGS, "Settings".to_string()),
         ];
         let selected = items.iter().position(|item| item.0 == self.tab).unwrap_or(0);
         let position = animate_eased(ui.ctx(), "nav-highlight", selected as f32, TRANSITION_SECONDS as f32, easing::cubic_out);
@@ -929,7 +929,7 @@ impl CrossWall {
             egui::vec2(width, NAV_ROW_HEIGHT),
         );
         let highlight_shape = ui.painter().add(egui::Shape::Noop);
-        for (index, (tab, label)) in items.iter().enumerate() {
+        for (index, (tab, icon, label)) in items.iter().enumerate() {
             let (rect, response) = ui.allocate_exact_size(egui::vec2(width, NAV_ROW_HEIGHT), egui::Sense::click());
             if response.hovered() && index != selected {
                 ui.painter().rect_filled(rect, radius, ui.visuals().widgets.hovered.weak_bg_fill);
@@ -938,7 +938,9 @@ impl CrossWall {
             let over = 1.0 - (position - index as f32).abs().min(1.0);
             let colour = ui.visuals().text_color().lerp_to_gamma(theme::on_colour(accent), over);
             let font = egui::TextStyle::Button.resolve(ui.style());
-            ui.painter().text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, label, font, colour);
+            let tint = accent.lerp_to_gamma(colour, over);
+            icons::paint(ui.painter(), rect.left_center() + egui::vec2(22.0, 0.0), 20.0, *icon, colour, tint);
+            ui.painter().text(rect.left_center() + egui::vec2(40.0, 0.0), egui::Align2::LEFT_CENTER, label, font, colour);
             if response.clicked() {
                 self.tab = *tab;
             }
@@ -958,7 +960,12 @@ impl CrossWall {
             self.browse.min = self.effective_min();
             let (ctx, desktop) = (ctx.clone(), self.desktop);
             // The font lookup can start a process, so it stays off the frame thread.
-            std::thread::spawn(move || theme::install_font(&ctx, desktop));
+            std::thread::spawn(move || {
+                let system = theme::read_font(desktop);
+                if system.is_some() {
+                    theme::install_font(&ctx, system);
+                }
+            });
         }
         while let Ok(system) = self.system_rx.try_recv() {
             if system != self.system {
@@ -1029,24 +1036,19 @@ fn card(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// A centred icon and message where a screen has nothing to show.
-fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, detail: &str) {
+fn empty_state(ui: &mut egui::Ui, icon: icons::Icon, title: &str, detail: &str) {
     ui.add_space((ui.available_height() * 0.28).max(16.0));
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(icon).size(44.0).weak());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), egui::Sense::hover());
+        icons::paint(ui.painter(), rect.center(), 52.0, icon, ui.visuals().weak_text_color(), ui.visuals().selection.bg_fill);
         ui.add_space(6.0);
         ui.heading(title);
         ui.weak(detail);
     });
 }
 
-fn centered_button(ui: &mut egui::Ui, text: &str) -> bool {
-    ui.vertical_centered(|ui| ui.button(text).clicked()).inner
-}
-
-/// The screen's main action, in the system accent colour.
-fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    let accent = ui.visuals().selection.bg_fill;
-    ui.add(egui::Button::new(egui::RichText::new(text).color(theme::on_colour(accent))).fill(accent))
+fn centered_button(ui: &mut egui::Ui, icon: icons::Icon, text: &str) -> bool {
+    ui.vertical_centered(|ui| icons::button(ui, icon, text).clicked()).inner
 }
 
 fn orientation_name(orientation: Orientation) -> &'static str {
@@ -1059,6 +1061,10 @@ fn orientation_name(orientation: Orientation) -> &'static str {
 }
 
 impl App for CrossWall {
+    fn setup(&mut self, ctx: &egui::Context) {
+        theme::install_font(ctx, None);
+    }
+
     fn ui(&mut self, ctx: &egui::Context) {
         self.follow_system(ctx);
         self.images.poll(ctx);

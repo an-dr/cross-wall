@@ -156,14 +156,21 @@ fn readable_on(accent: Color32, panel: Color32) -> Color32 {
 
 /// Puts the desktop's interface font first. egui's fonts stay as fallbacks for
 /// characters it lacks, and a font that cannot be read leaves egui's own in use.
-pub fn install_font(ctx: &egui::Context, desktop: Desktop) {
-    let Some(bytes) = font_path(desktop).and_then(|path| std::fs::read(path).ok()) else { return };
+pub fn install_font(ctx: &egui::Context, system: Option<Vec<u8>>) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("system".into(), egui::FontData::from_owned(bytes).into());
-    if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
-        family.insert(0, "system".into());
+    crate::icons::add_fonts(&mut fonts);
+    if let Some(bytes) = system {
+        fonts.font_data.insert("system".into(), egui::FontData::from_owned(bytes).into());
+        if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+            family.insert(0, "system".into());
+        }
     }
     ctx.set_fonts(fonts);
+}
+
+/// Can start a process, so it stays off the frame thread.
+pub fn read_font(desktop: Desktop) -> Option<Vec<u8>> {
+    font_path(desktop).and_then(|path| std::fs::read(path).ok())
 }
 
 fn font_path(desktop: Desktop) -> Option<PathBuf> {

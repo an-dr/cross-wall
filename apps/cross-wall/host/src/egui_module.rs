@@ -10,6 +10,8 @@ use sdl3::event::Event as E;
 
 /// The screens, called once per frame.
 pub trait App: Send {
+    /// Runs before the first frame. Fonts set during a frame only apply to the next.
+    fn setup(&mut self, _ctx: &egui::Context) {}
     fn ui(&mut self, ctx: &egui::Context);
     /// Physical pixels per interface point. bones reports no display scale.
     fn scale(&self) -> f32 {
@@ -28,8 +30,9 @@ pub struct EguiModule<A: App> {
 }
 
 impl<A: App> EguiModule<A> {
-    pub fn new(app: A, logger: Logger) -> Self {
+    pub fn new(mut app: A, logger: Logger) -> Self {
         let ctx = egui::Context::default();
+        app.setup(&ctx);
         Self {
             ctx,
             app,

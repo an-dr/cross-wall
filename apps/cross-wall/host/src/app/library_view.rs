@@ -3,7 +3,7 @@
 use cross_wall_library::{check_name, file_name, join, parent, Entry};
 use cross_wall_sources::{Photo, Sources};
 
-use super::{primary_button, CrossWall};
+use super::CrossWall;
 use crate::icons;
 use crate::librarian::Command;
 
@@ -54,7 +54,7 @@ impl CrossWall {
                     self.draft.library_groups = groups;
                     self.save_quietly();
                 }
-                if ui.button(icons::with(icons::NEW_FOLDER, "New folder")).clicked() {
+                if icons::button(ui, icons::NEW_FOLDER, "New folder").clicked() {
                     let parent = if groups { String::new() } else { self.current_folder.clone() };
                     self.dialog = Some(Dialog::NewFolder { parent, name: String::new() });
                 }
@@ -64,7 +64,7 @@ impl CrossWall {
         self.progress_strip(ui);
         ui.add_space(6.0);
         if self.snapshot.files.is_empty() && self.snapshot.folders.is_empty() {
-            super::empty_state(ui, "🖼", "This folder is empty", "Download wallpapers from Browse, or add images with your file manager.");
+            super::empty_state(ui, icons::BROWSE, "This folder is empty", "Download wallpapers from Browse, or add images with your file manager.");
             return;
         }
         let view = format!("{}/{}", self.settings.library_groups, self.current_folder);
@@ -82,10 +82,10 @@ impl CrossWall {
     }
 
     fn choose_folder_state(&mut self, ui: &mut egui::Ui) {
-        super::empty_state(ui, "🖼", "Choose your wallpaper folder", "Downloads go to its root, and you can organise it from here.");
+        super::empty_state(ui, icons::BROWSE, "Choose your wallpaper folder", "Downloads go to its root, and you can organise it from here.");
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
-            if primary_button(ui, &icons::with(icons::CHOOSE, "Choose folder")).clicked() {
+            if icons::primary(ui, icons::CHOOSE, "Choose folder").clicked() {
                 self.pick_folder();
             }
         });
@@ -195,7 +195,7 @@ impl CrossWall {
 
     /// Rename, move, and delete for one file or folder.
     pub(super) fn item_menu(&mut self, ui: &mut egui::Ui, path: &str, is_folder: bool) {
-        if ui.button(icons::with(icons::RENAME, "Rename")).clicked() {
+        if icons::button(ui, icons::RENAME, "Rename").clicked() {
             self.dialog = Some(Dialog::Rename { path: path.to_string(), name: file_name(path).to_string() });
             ui.close();
         }
@@ -212,7 +212,7 @@ impl CrossWall {
             }
         });
         ui.separator();
-        if ui.button(icons::with(icons::DELETE, "Delete")).clicked() {
+        if icons::button(ui, icons::DELETE, "Delete").clicked() {
             self.dialog = Some(Dialog::Delete { path: path.to_string() });
             ui.close();
         }
@@ -253,7 +253,7 @@ impl CrossWall {
                     self.finish_dialog(&dialog);
                     done = true;
                 }
-                done |= ui.button(icons::with(icons::CANCEL, "Cancel")).clicked();
+                done |= icons::button(ui, icons::CANCEL, "Cancel").clicked();
             });
         });
         if !done && !modal.should_close() {
