@@ -1,11 +1,13 @@
 //! Loads and decodes images on worker threads and hands egui textures to the frame thread.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
-const WORKERS: usize = 6;
+const MIN_WORKERS: usize = 4;
+const MAX_WORKERS: usize = 8;
 /// Originals can be 6000 pixels wide, too much memory to keep for a whole library.
 const MAX_THUMBNAIL: u32 = 640;
 const MAX_PREVIEW: u32 = 2560;
@@ -13,6 +15,31 @@ const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 type Bytes = Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>;
 type Decoded = Result<egui::ColorImage, String>;
+
+/// Newest first: what is on screen now was asked for last, and should not wait
+/// behind photos already scrolled past.
+#[derive(Default)]
+struct JobStack {
+    jobs: Mutex<Vec<(String, Bytes)>>,
+    ready: Condvar,
+}
+
+impl JobStack {
+    fn push(&self, job: (String, Bytes)) {
+        self.jobs.lock().expect("no worker panics holding this lock").push(job);
+        self.ready.notify_one();
+    }
+
+    fn pop(&self) -> (String, Bytes) {
+        let mut jobs = self.jobs.lock().expect("no worker panics holding this lock");
+        loop {
+            if let Some(job) = jobs.pop() {
+                return job;
+            }
+            jobs = self.ready.wait(jobs).expect("no worker panics holding this lock");
+        }
+    }
+}
 
 pub enum Slot {
     Loading,
@@ -22,7 +49,7 @@ pub enum Slot {
 
 pub struct Images {
     slots: HashMap<String, Slot>,
-    jobs: Sender<(String, Bytes)>,
+    jobs: Arc<JobStack>,
     done: Receiver<(String, Decoded)>,
     done_tx: Sender<(String, Decoded)>,
     /// Images asked for since the queue was last empty, for the progress bar.
@@ -31,15 +58,14 @@ pub struct Images {
 
 impl Images {
     pub fn new() -> Self {
-        let (jobs, job_queue) = channel::<(String, Bytes)>();
+        let jobs = Arc::new(JobStack::default());
         let (done_tx, done) = channel();
-        let job_queue = Arc::new(Mutex::new(job_queue));
-        for _ in 0..WORKERS {
-            let queue = job_queue.clone();
+        let workers = std::thread::available_parallelism().map_or(MIN_WORKERS, |n| n.get().clamp(MIN_WORKERS, MAX_WORKERS));
+        for _ in 0..workers {
+            let queue = jobs.clone();
             let done_tx = done_tx.clone();
             std::thread::spawn(move || loop {
-                let job = queue.lock().expect("no worker panics holding this lock").recv();
-                let Ok((key, bytes)) = job else { return };
+                let (key, bytes) = queue.pop();
                 if done_tx.send(load(key, bytes)).is_err() {
                     return;
                 }
@@ -58,7 +84,7 @@ impl Images {
                     let _ = done.send(load(name, work));
                 });
             } else {
-                let _ = self.jobs.send((key.to_string(), bytes()));
+                self.jobs.push((key.to_string(), bytes()));
             }
             self.slots.insert(key.to_string(), Slot::Loading);
             self.batch += 1;
@@ -123,6 +149,25 @@ pub fn cached(path: PathBuf, fetch: impl FnOnce() -> Result<Vec<u8>, String>) ->
     Ok(bytes)
 }
 
+/// A small JPEG of a local image, made once and kept in `cache`. Keyed by path,
+/// size, and modification time, so an edited image gets a new one.
+pub fn local_thumbnail(file: &Path, cache: &Path) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::metadata(file).map_err(|e| e.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata.modified().ok().hash(&mut hasher);
+    let path = cache.join(format!("local-{:016x}.jpg", hasher.finish()));
+    cached(path, || {
+        let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
+        let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        let small = image.thumbnail(MAX_THUMBNAIL, MAX_THUMBNAIL).to_rgb8();
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        small.write_to(&mut jpeg, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+        Ok(jpeg.into_inner())
+    })
+}
+
 /// Deletes cache files not written for a month, so browsing cannot fill the disk.
 pub fn prune_cache(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -176,6 +221,46 @@ mod tests {
         let mut png = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(100, 50).write_to(&mut png, image::ImageFormat::Png).unwrap();
         assert_eq!(decode(png.get_ref(), 20).unwrap().size, [20, 10]);
+    }
+
+    #[test]
+    fn newest_jobs_run_first() {
+        let stack = JobStack::default();
+        for name in ["old", "new"] {
+            stack.push((name.to_string(), Box::new(|| Ok(Vec::new()))));
+        }
+        assert_eq!(stack.pop().0, "new");
+        assert_eq!(stack.pop().0, "old");
+    }
+
+    #[test]
+    fn local_thumbnails_are_small_cached_and_follow_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, cache) = (dir.path().join("big.png"), dir.path().join("cache"));
+        image::RgbImage::new(2000, 1000).save(&file).unwrap();
+        let thumb = image::load_from_memory(&local_thumbnail(&file, &cache).unwrap()).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (MAX_THUMBNAIL, MAX_THUMBNAIL / 2));
+        local_thumbnail(&file, &cache).unwrap();
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+        image::RgbImage::new(1000, 1000).save(&file).unwrap();
+        let edited = image::load_from_memory(&local_thumbnail(&file, &cache).unwrap()).unwrap();
+        assert_eq!(edited.height(), MAX_THUMBNAIL);
+    }
+
+    /// Timing on a 6000 x 4000 photo: `cargo test -p cross-wall-app measure -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_thumbnail_speed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, cache) = (dir.path().join("big.jpg"), dir.path().join("cache"));
+        let photo = image::RgbImage::from_fn(6000, 4000, |x, y| image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 239) as u8]));
+        photo.save(&file).unwrap();
+        for label in ["first", "cached"] {
+            let start = std::time::Instant::now();
+            let bytes = local_thumbnail(&file, &cache).unwrap();
+            decode(&bytes, MAX_THUMBNAIL).unwrap();
+            println!("{label}: {:?}", start.elapsed());
+        }
     }
 
     #[test]

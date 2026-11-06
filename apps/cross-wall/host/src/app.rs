@@ -309,8 +309,9 @@ impl CrossWall {
         // Files in the folder need no network, so the library works offline.
         if let Some(path) = photo.id.strip_prefix("file:") {
             let file = chosen_folder(&self.settings).unwrap_or_default().join(path);
+            let cache = self.cache.clone();
             return self.images.get(&format!("file/{path}"), || {
-                Box::new(move || std::fs::read(file).map_err(|e| e.to_string()))
+                Box::new(move || images::local_thumbnail(&file, &cache))
             });
         }
         let (client, wanted, path) =
