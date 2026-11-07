@@ -14,16 +14,16 @@
 - **Flow**: Type a query and press Enter, or change the source, shape, or minimum resolution.
 - **Success**: The grid shows the matching photos, or says there are none. Lorem Picsum has no search, and its search box says so.
 
-### UC-BROWSE-04: Show only photos big enough for my screen
-
-- **Actor**: Wallpaper user.
-- **Goal**: Avoid wallpapers that would look soft on my display.
-- **Flow**: Browse with the minimum resolution, which starts at my main display's resolution, or pick another size or Any size from its menu.
-- **Success**: Results are at least that size, and the choice is still set next time. A photo whose source reports no size is still shown.
-
 ### UC-BROWSE-03: Preview a photo
 
 - **Actor**: Wallpaper user.
 - **Goal**: Judge a photo before keeping it.
 - **Flow**: Click a thumbnail, and step through photos with the arrow keys. The three photos on each side load ahead, so stepping is quick. A big image still loading shows download progress, then a message while it is prepared.
 - **Success**: A full-window view shows the photo, its creator, size, and licence where known, with Like and Apply buttons.
+
+### UC-BROWSE-04: Show only photos big enough for my screen
+
+- **Actor**: Wallpaper user.
+- **Goal**: Avoid wallpapers that would look soft on my display.
+- **Flow**: Browse with the minimum resolution, which starts at my main display's resolution, or pick another size or Any size from its menu.
+- **Success**: Results are at least that size, and the choice is still set next time. A photo whose source reports no size is still shown.

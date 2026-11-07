@@ -25,6 +25,8 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install Linux packages
         if: runner.os == 'Linux'
         run: |
@@ -38,6 +40,12 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: ${{ matrix.arch }}
+      # Workspace crates only: --all would also check the vendored engine.
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
       - name: Package

@@ -1,10 +1,10 @@
-# cross-wall
+# crossWall
 
 [![build](https://github.com/an-dr/cross-wall/actions/workflows/build.yml/badge.svg)](https://github.com/an-dr/cross-wall/actions/workflows/build.yml) [![release](https://img.shields.io/github/v/release/an-dr/cross-wall)](https://github.com/an-dr/cross-wall/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Powered by bones](https://img.shields.io/badge/powered%20by-bones-e8e2d4?labelColor=2b2b2b)](https://github.com/an-dr/bones) [![AI Level 3](https://ai-level.dev/badge/standard/3.svg)](https://ai-level.dev/level-3)
 
 A desktop wallpaper manager: find wallpapers with no account or API key, keep them organised in a folder of your own, and set them on your desktop.
 
-![The cross-wall Library in its dark theme, showing wallpapers as a gallery of rows under a side navigation](docs/media/library.png)
+![The crossWall Library in its dark theme, showing wallpapers as a gallery of rows under a side navigation](docs/media/library.png)
 
 ## Features
 
@@ -49,7 +49,7 @@ Photos belong to their creators. The preview shows a licence where the source gi
 ```sh
 git clone --recurse-submodules https://github.com/an-dr/cross-wall
 cd cross-wall
-cargo run -p cross-wall-app
+cargo run -p cross-wall
 ```
 
 Needs a Rust toolchain, a C compiler, CMake, and Ninja, because bones builds SDL3 from source. On Linux, run `cargo xtask linux-packages` inside `vendor/bones` to list the packages it also needs.

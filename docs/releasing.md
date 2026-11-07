@@ -2,7 +2,9 @@
 
 `cargo xtask package --platform <windows-x64|windows-arm64|linux-x64>` builds a release and writes the zip and its update manifest to `release/`. It builds for the machine it runs on unless given `--target <triple>`.
 
-To publish, set the version in `apps/cross-wall/host/Cargo.toml` and `UPGRADER_LAUNCHER_VERSION` in `.cargo/config.toml` to the same value, get that commit onto `main`, and push a matching tag:
+To publish, set the version in `[workspace.package]` of the root `Cargo.toml` and `UPGRADER_LAUNCHER_VERSION` in `.cargo/config.toml` to the same value, get that commit onto `main`, and push a matching tag. `cargo test` and `cargo xtask package` both fail when the two versions differ.
+
+Then tag the commit and push it:
 
 ```sh
 git tag v0.2.0

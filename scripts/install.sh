@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the latest cross-wall release for this user. Needs curl and unzip.
+# Installs the latest crossWall release for this user. Needs curl and unzip.
 set -eu
 base=https://github.com/an-dr/cross-wall/releases/latest/download
 work=$(mktemp -d)
@@ -11,4 +11,4 @@ curl -fsSL "$url" -o "$work/cross-wall.zip"
 echo "$sha  $work/cross-wall.zip" | sha256sum -c - >/dev/null
 unzip -q "$work/cross-wall.zip" -d "$work/app"
 "$work/app/cross-wall-app" --install
-echo "cross-wall is installed. Start it from your application list."
+echo "crossWall is installed. Start it from your application list."

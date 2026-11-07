@@ -1,10 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["apps/cross-wall/host", "crates/sources", "crates/library", "crates/apply", "xtask"]
+members = [
+    "apps/cross-wall",
+    "apps/cross-wall-launcher",
+    "crates/cross-wall-sources",
+    "crates/cross-wall-library",
+    "crates/cross-wall-apply",
+    "xtask",
+]
 exclude = ["vendor/bones", "vendor/bones/crates/bones-messages"]
 
-# SDL3's build script derives its cmake build type from these. A Debug SDL on
-# Windows links the debug CRT while rustc links the release one.
+# The app and its launcher ship together and must report the same version;
+# UPGRADER_LAUNCHER_VERSION in .cargo/config.toml repeats it.
+[workspace.package]
+version = "0.2.0"
+
 # Unoptimised, decoding one large photo takes seconds, which makes `cargo run` look broken.
 [profile.dev.package.image]
 opt-level = 3
@@ -21,6 +31,8 @@ opt-level = 3
 [profile.dev.package.image-webp]
 opt-level = 3
 
+# SDL3's build script derives its cmake build type from these. A Debug SDL on
+# Windows links the debug CRT while rustc links the release one.
 [profile.dev.package.sdl3-sys]
 opt-level = 2
 debug = false

@@ -1,4 +1,4 @@
-# cross-wall documentation
+# crossWall documentation
 
 - [Use cases](use-cases/index.md): what must keep working.
 - [Architecture](architecture.md): the parts and their guarantees.

@@ -2,7 +2,7 @@
 
 A use case states one goal and what the actor observes when it worked. A change that breaks one is a breaking change.
 
-Fields: **Actor**, **Goal**, **Flow**, **Success**.
+Fields: **Actor**, **Goal**, **Flow**, **Success**. Each area lists its use cases in ID order. A retired ID, such as UC-SETUP-01, is never reused.
 
 Actor: **Wallpaper user**, one person with several computers who collects photos and sets them as the desktop background.
 

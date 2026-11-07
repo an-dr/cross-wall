@@ -520,12 +520,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "cross-wall-app"
+name = "cross-wall"
 version = "0.2.0"
 dependencies = [
  "arboard",
  "bones-kernel",
- "bones-launcher",
  "cross-wall-apply",
  "cross-wall-library",
  "cross-wall-sources",
@@ -549,20 +548,27 @@ name = "cross-wall-apply"
 version = "0.1.0"
 dependencies = [
  "tempfile",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "cross-wall-launcher"
+version = "0.2.0"
+dependencies = [
+ "bones-launcher",
+ "winresource",
 ]
 
 [[package]]
 name = "cross-wall-library"
 version = "0.1.0"
 dependencies = [
- "cross-wall-sources",
  "image",
  "serde",
  "serde_json",
  "tempfile",
  "trash",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -570,7 +576,6 @@ name = "cross-wall-sources"
 version = "0.1.0"
 dependencies = [
  "native-tls",
- "serde",
  "serde_json",
  "ureq",
 ]

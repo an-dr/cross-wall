@@ -1,0 +1,11 @@
+[package]
+name = "cross-wall-launcher"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+bones-launcher = { path = "../../vendor/bones/crates/bones-launcher" }
+
+[build-dependencies]
+winresource = "0.1"

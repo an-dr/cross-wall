@@ -12,7 +12,7 @@
 - **Actor**: Wallpaper user.
 - **Goal**: Mark my favourites, among downloads and my own images.
 - **Flow**: Press Like on a photo. In Browse this downloads it too. Press it again to remove the like.
-- **Success**: It appears under Liked, and removing the like keeps the file. The like is stored in the folder, so it stays with the folder.
+- **Success**: It appears under Liked, and removing the like keeps the file. The like is stored in the folder, so it stays with the folder. If the stored likes cannot be read, the app says so and keeps the unreadable file beside them.
 
 ### UC-LIBRARY-03: See what is in my folder
 
