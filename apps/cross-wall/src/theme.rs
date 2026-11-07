@@ -289,6 +289,7 @@ fn gnome_accent(value: &str) -> Option<Color32> {
 }
 
 /// Windows stores the accent as 0xAABBGGRR.
+#[cfg(any(windows, test))]
 fn windows_accent(value: u32) -> Color32 {
     Color32::from_rgb(value as u8, (value >> 8) as u8, (value >> 16) as u8)
 }
