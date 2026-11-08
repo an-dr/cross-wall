@@ -1,6 +1,6 @@
 [env]
 CMAKE_GENERATOR = "Ninja"
-UPGRADER_LAUNCHER_VERSION = "0.3.0"
+UPGRADER_LAUNCHER_VERSION = "0.3.1"
 
 [alias]
 xtask = "run --quiet -p xtask --target-dir target/xtask --"
