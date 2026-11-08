@@ -25,7 +25,7 @@ Windows x64 or ARM64, in PowerShell:
 irm https://raw.githubusercontent.com/an-dr/cross-wall/main/scripts/install.ps1 | iex
 ```
 
-Linux x64, which also needs `curl` and `unzip`:
+Linux x64 with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, or later), which also needs `curl` and `unzip`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/an-dr/cross-wall/main/scripts/install.sh | sh

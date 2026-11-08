@@ -12,3 +12,5 @@ git push origin main v0.2.0
 ```
 
 The [build workflow](../.github/workflows/build.yml) tests and packages on all three platforms, then publishes a GitHub release. A tag that does not match the version fails the build. Installed apps look for updates in the latest release of `an-dr/cross-wall`, so the repository must be public for them to work.
+
+Release builds for Linux run in an `ubuntu:22.04` container, so the binary runs on glibc 2.35 or newer whatever the CI runner ships. Do not move it to a newer image without raising the requirement in the README.
