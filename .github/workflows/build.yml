@@ -25,13 +25,14 @@ jobs:
           # the oldest with webkit2gtk-4.1, which the engine links.
           - { platform: linux-x64, os: ubuntu-latest, arch: x64, container: 'ubuntu:22.04' }
     steps:
-      # The bare image lacks what the steps below assume; git must precede checkout,
-      # or it downloads a tarball without the submodules.
+      # The bare image lacks what the steps below assume: git must precede checkout,
+      # or it downloads a tarball without the submodules, and a C toolchain must
+      # precede `cargo xtask linux-packages`, which compiles before it prints the list.
       - name: Prepare container
         if: runner.os == 'Linux'
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y sudo git curl ca-certificates
+          DEBIAN_FRONTEND=noninteractive apt-get install -y sudo git curl ca-certificates build-essential
       - uses: actions/checkout@v4
         with:
           submodules: recursive
