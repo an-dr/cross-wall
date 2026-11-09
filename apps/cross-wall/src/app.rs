@@ -21,11 +21,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
-use bones_kernel::bus::{Envelope, Handler, Module, ModuleContext};
 use bones_kernel::messages::ui::kinds::{Selectable, TitleBar};
 use bones_kernel::messages::ui::{icons, Event, Layout, Node, PanelSide, Root, Spec, WidgetProps};
 use bones_kernel::messages::upgrader::Action;
-use bones_kernel::ui::{Theme, UiPort, UiService};
+use bones_kernel::ui::{Frame, Theme, UiView};
 
 use browse_view::BrowseView;
 use kit::Kit;
@@ -39,10 +38,8 @@ use crate::installation::{self, UpdateState};
 use crate::logs;
 use crate::settings::{Store, ThemeMode};
 
-/// The name the app's trees and images are shown under.
-const OWNER: &str = "cross-wall";
-/// A second owner for dialogs, which bones draws above the screen.
-const DIALOG_OWNER: &str = "cross-wall/dialog";
+/// The module name, under which bones shows the app's trees and images.
+pub const NAME: &str = "cross-wall";
 /// The app icon's image handle, far from the ones `Images` hands out.
 const ICON_HANDLE: u32 = u32::MAX;
 
@@ -185,83 +182,59 @@ impl CrossWall {
     }
 }
 
-/// Runs the app as a bones native module: each frame it hands the app the
-/// events of the last frame's widgets, then shows the tree the app builds.
-pub struct AppModule {
+/// Runs the app as a bones native view: each frame bones hands it the events
+/// of the last frame's widgets, then shows the trees it builds.
+pub struct AppView {
     app: CrossWall,
     kit: Kit,
-    port: Option<UiService>,
     started: bool,
 }
 
-impl AppModule {
+impl AppView {
     pub fn new(app: CrossWall) -> Self {
         Self {
             app,
             kit: Kit::default(),
-            port: None,
             started: false,
         }
     }
 
     /// Once the window exists: its icon, the display size, and the icon image.
-    fn start(&mut self, port: &mut dyn UiPort) {
+    fn start(&mut self, frame: &mut Frame<'_>) {
         self.started = true;
         crate::window::set_icon();
         self.app.display_size = crate::window::primary_display_size();
         if let Ok(icon) = image::load_from_memory(crate::assets::ICON_PNG) {
             let icon = icon.thumbnail(64, 64).to_rgba8();
             let (width, height) = (icon.width(), icon.height());
-            port.set_image(OWNER, ICON_HANDLE, width, height, icon.into_raw());
+            frame.set_image(ICON_HANDLE, width, height, icon.into_raw());
         }
     }
 }
 
-impl Handler for AppModule {
-    fn handle(&mut self, _envelope: &Envelope) {}
-}
-
-impl Module for AppModule {
-    fn name(&self) -> &str {
-        OWNER
+impl UiView for AppView {
+    fn on_event(&mut self, event: Event) {
+        if let Event::KeyPressed { key } = &event {
+            self.app.on_key(key);
+        } else if let Some(action) = self.kit.take(event.id()) {
+            action(&mut self.app, &event);
+        }
     }
 
-    fn init(&mut self, ctx: &mut ModuleContext) -> Result<(), String> {
-        self.port = Some(
-            ctx.get_service::<UiService>()
-                .cloned()
-                .ok_or("the app needs bones' ui service (compose .ui() first)")?,
-        );
-        Ok(())
-    }
-
-    fn after_tick(&mut self) {
-        let Some(port) = self.port.clone() else {
-            return;
-        };
-        let mut port = port.lock().unwrap();
+    fn view(&mut self, frame: &mut Frame<'_>) -> Spec {
         if !self.started {
-            self.start(&mut *port);
-        }
-        let mut events = port.take_events(OWNER);
-        events.extend(port.take_events(DIALOG_OWNER));
-        for event in events {
-            if let Event::KeyPressed { key } = &event {
-                self.app.on_key(key);
-            } else if let Some(action) = self.kit.take(event.id()) {
-                action(&mut self.app, &event);
-            }
+            self.start(frame);
         }
         self.app.poll();
-        self.app.shared.images.poll(&mut *port, OWNER);
+        self.app.shared.images.poll(frame);
         let mut kit = Kit::default();
         let spec = self.app.view(&mut kit);
-        port.show(OWNER, spec);
         if let Some(dialog) = self.app.dialog_view(&mut kit) {
-            port.show(DIALOG_OWNER, dialog);
+            frame.window("dialog", dialog);
         }
-        port.set_zoom(self.app.shared.settings().ui_zoom);
-        port.set_theme(self.app.theme());
+        frame.set_zoom(self.app.shared.settings().ui_zoom);
+        frame.set_theme(self.app.theme());
         self.kit = kit;
+        spec
     }
 }

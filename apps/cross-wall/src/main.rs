@@ -75,6 +75,9 @@ fn run() -> bones_kernel::Result<()> {
         .upgrade(installation::config())
         .module(installation::UpdateBridge::new(request_rx, result_tx))
         .ui()
-        .module(app::AppModule::new(screens))
+        .module(bones_kernel::ui::ViewModule::new(
+            app::NAME,
+            app::AppView::new(screens),
+        ))
         .run()
 }

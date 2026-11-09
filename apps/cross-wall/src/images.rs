@@ -7,7 +7,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
-use bones_kernel::ui::UiPort;
+use bones_kernel::ui::Frame;
 
 const MIN_WORKERS: usize = 4;
 const MAX_WORKERS: usize = 8;
@@ -158,10 +158,10 @@ impl Images {
     }
 
     /// Uploads what the workers finished and frees what was forgotten, as
-    /// `owner`'s images.
-    pub fn poll(&mut self, port: &mut dyn UiPort, owner: &str) {
+    /// the view's images.
+    pub fn poll(&mut self, frame: &mut Frame<'_>) {
         for handle in self.to_free.drain(..) {
-            port.free_image(owner, handle);
+            frame.free_image(handle);
         }
         while let Ok((key, decoded)) = self.done.try_recv() {
             // Forgotten while it loaded: keeping it would hold an image nobody can free.
@@ -172,7 +172,7 @@ impl Images {
                 Ok((width, height, rgba)) => {
                     self.next_handle += 1;
                     let handle = self.next_handle;
-                    port.set_image(owner, handle, width, height, rgba);
+                    frame.set_image(handle, width, height, rgba);
                     Slot::Ready { handle }
                 }
                 Err(error) => Slot::Failed(error),
@@ -349,7 +349,7 @@ mod tests {
         freed: Vec<u32>,
     }
 
-    impl UiPort for Uploads {
+    impl bones_kernel::ui::UiPort for Uploads {
         fn show(&mut self, _: &str, _: bones_kernel::messages::ui::Spec) {}
         fn take_events(&mut self, _: &str) -> Vec<bones_kernel::messages::ui::Event> {
             Vec::new()
@@ -371,7 +371,7 @@ mod tests {
         images.get("large/a", || Box::new(|| Err("x".into())));
         images.retain_large(&std::collections::HashSet::new());
         std::thread::sleep(Duration::from_millis(100));
-        images.poll(&mut uploads, "app");
+        images.poll(&mut Frame::new(&mut uploads, "app"));
         assert!(images.slots.is_empty());
         assert!(uploads.set.is_empty());
     }
@@ -387,7 +387,7 @@ mod tests {
         let mut images = Images::new();
         images.get("thumb/a", move || Box::new(move || Ok(bytes)));
         for _ in 0..50 {
-            images.poll(&mut uploads, "app");
+            images.poll(&mut Frame::new(&mut uploads, "app"));
             if images.handle("thumb/a").is_some() {
                 break;
             }
@@ -396,7 +396,7 @@ mod tests {
         let handle = images.handle("thumb/a").expect("the image never loaded");
         assert_eq!(uploads.set, [handle]);
         images.forget("thumb/");
-        images.poll(&mut uploads, "app");
+        images.poll(&mut Frame::new(&mut uploads, "app"));
         assert_eq!(uploads.freed, [handle]);
     }
 
