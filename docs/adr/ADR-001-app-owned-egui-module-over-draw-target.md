@@ -1,5 +1,7 @@
 # ADR-001: App-owned egui module over draw-target
 
+Superseded by [ADR-004](ADR-004-screens-are-built-from-bones-widgets.md).
+
 ## Problem
 
 The app needs a native interface with image thumbnails. The bones `ui/*` vocabulary offers only label, text-edit, and button.

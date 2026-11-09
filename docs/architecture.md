@@ -13,10 +13,10 @@ flowchart TD
 
 | Part | Responsibility | Use cases |
 | --- | --- | --- |
-| host | Composes bones; draws every screen with egui; owns settings and paths; maps a source's photo to the credit the library keeps | all |
+| host | Composes bones; describes every screen as a bones widget tree ([ADR-004](adr/ADR-004-screens-are-built-from-bones-widgets.md)); owns settings and paths; maps a source's photo to the credit the library keeps | all |
 | sources | One search and download call over five keyless photo sources; no UI or bones dependency | BROWSE, LIBRARY-01 |
 | library | The wallpaper folder: listing, organising, and likes and credits in its metadata file; no dependency on sources | LIBRARY, SETUP-02 |
-| apply | Detects the desktop and sets the wallpaper; its desktop detection also picks the host's look | APPLY-01 |
+| apply | Detects the desktop and sets the wallpaper | APPLY-01 |
 | launcher | Stable entry point selecting the newest installed version | INSTALL, UPDATE |
 
 ## Guarantees
