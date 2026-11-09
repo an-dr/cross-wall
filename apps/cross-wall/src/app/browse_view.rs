@@ -1,20 +1,29 @@
 //! The Browse screen: search a source, filter the results, and scroll for more.
+use bones_kernel::messages::ui::kinds::{
+    EmptyState, Hyperlink, IconButton, Label, Select, Space, Spinner, TextEdit,
+};
+use bones_kernel::messages::ui::{Event, Layout, Node, WidgetProps};
 use cross_wall_sources::{MinSize, Orientation, Source};
 
+use super::kit::{stable_id, Kit};
 use super::shared::Shared;
 use super::shown::Shown;
-use super::widgets::{centered_button, empty_state};
+use super::CrossWall;
 use crate::browse::Browse;
-use crate::icons;
 use crate::settings::Settings;
 
-const AUTO_LOAD_MARGIN: f32 = 500.0;
 const RESOLUTIONS: [(u32, u32); 5] = [
     (1280, 720),
     (1920, 1080),
     (2560, 1440),
     (3840, 2160),
     (5120, 2880),
+];
+const ORIENTATIONS: [Orientation; 4] = [
+    Orientation::Any,
+    Orientation::Landscape,
+    Orientation::Portrait,
+    Orientation::Square,
 ];
 
 pub struct BrowseView {
@@ -32,114 +41,189 @@ impl BrowseView {
         self.browse.poll(&shared.client);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, display_size: Option<(u32, u32)>) {
-        self.browse.min = effective_min(shared.settings(), display_size);
-        self.browse.start_once(&shared.client);
-        let mut refresh = false;
-        ui.horizontal_wrapped(|ui| {
-            let searchable = self.browse.source.has_search();
-            let hint = if searchable {
-                "Search wallpapers"
-            } else {
-                "This source has no search"
-            };
-            let edit = egui::TextEdit::singleline(&mut self.browse.text)
-                .hint_text(hint)
-                .margin(egui::Margin::symmetric(10, 5))
-                .desired_width((ui.available_width() - 450.0).max(130.0));
-            let edit = ui.add_enabled(searchable, edit);
-            refresh |= edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            egui::ComboBox::from_id_salt("source")
-                .selected_text(self.browse.source.name())
-                .show_ui(ui, |ui| {
-                    for source in Source::ALL {
-                        refresh |= ui
-                            .selectable_value(&mut self.browse.source, source, source.name())
-                            .changed();
-                    }
-                });
-            egui::ComboBox::from_id_salt("orientation")
-                .selected_text(orientation_name(self.browse.orientation))
-                .show_ui(ui, |ui| {
-                    for o in [
-                        Orientation::Any,
-                        Orientation::Landscape,
-                        Orientation::Portrait,
-                        Orientation::Square,
-                    ] {
-                        refresh |= ui
-                            .selectable_value(&mut self.browse.orientation, o, orientation_name(o))
-                            .changed();
-                    }
-                });
-            if resolution_menu(ui, shared, display_size) {
-                self.browse.min = effective_min(shared.settings(), display_size);
-                refresh = true;
+    /// Starts a new search with the current filters, dropping old thumbnails.
+    fn refresh(&mut self, shared: &mut Shared) {
+        shared.images.forget("thumb/remote:");
+        self.browse.search(&shared.client);
+    }
+}
+
+impl CrossWall {
+    pub fn browse_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        let min = effective_min(self.shared.settings(), self.display_size);
+        let browse = &mut self.browse.browse;
+        browse.min = min;
+        browse.start_once(&self.shared.client);
+
+        let mut nodes = vec![self.browse_toolbar(kit), Space { amount: 6.0 }.node(0)];
+        let browse = &self.browse.browse;
+        nodes.extend(self.progress_strip(browse.loading));
+        let browse = &self.browse.browse;
+        if browse.photos.is_empty() && browse.loading {
+            nodes.push(
+                EmptyState {
+                    icon: "compass".into(),
+                    title: "Finding wallpapers".into(),
+                    detail: "Asking the source for photos...".into(),
+                }
+                .node(0),
+            );
+            return nodes;
+        }
+        if browse.photos.is_empty() && !browse.message.is_empty() {
+            nodes.push(
+                EmptyState {
+                    icon: "compass".into(),
+                    title: "No wallpapers to show".into(),
+                    detail: browse.message.clone(),
+                }
+                .node(0),
+            );
+            if browse.has_more {
+                let id = kit.on(|app, _| app.browse.browse.load_more(&app.shared.client));
+                nodes.push(Node::container(
+                    Layout::Centred,
+                    vec![IconButton::new("rotate-cw", "Try again").node(id)],
+                ));
+            }
+            return nodes;
+        }
+        let items: Vec<Shown> = browse.photos.iter().cloned().map(Shown::Remote).collect();
+        let message = browse.message.clone();
+        let (loading, stalled, source) = (browse.loading, browse.is_stalled(), browse.source);
+        self.shared.shown = items.clone();
+        let mut list = vec![self.gallery(kit, &items)];
+        if !message.is_empty() {
+            list.push(Space { amount: 8.0 }.node(0));
+            list.push(Node::container(
+                Layout::Centred,
+                vec![Label { text: message }.node(0)],
+            ));
+        }
+        let mut footer = vec![Space { amount: 8.0 }.node(0)];
+        if loading {
+            footer.push(Spinner.node(0));
+        } else if stalled {
+            let id = kit.on(|app, _| app.browse.browse.load_more(&app.shared.client));
+            footer.push(IconButton::new("rotate-cw", "Try again").node(id));
+        }
+        footer.push(
+            Hyperlink {
+                label: format!("Photos provided by {}", source.name()),
+                url: source.home().to_string(),
+            }
+            .node(0),
+        );
+        footer.push(Space { amount: 8.0 }.node(0));
+        list.push(Node::container(Layout::Centred, footer));
+        // Loads more before the very end, so scrolling rarely reaches a gap.
+        let scroll = kit.keyed("browse-scroll", |app, event| {
+            if let Event::ReachedEnd { .. } = event {
+                if app.browse.browse.can_auto_load() {
+                    app.browse.browse.load_more(&app.shared.client);
+                }
             }
         });
-        ui.add_space(6.0);
-        if refresh {
-            shared.images.forget("thumb/remote:");
-            self.browse.search(&shared.client);
-        }
-        shared.progress_strip(ui, self.browse.loading);
-        if self.browse.photos.is_empty() && self.browse.loading {
-            empty_state(
-                ui,
-                icons::BROWSE,
-                "Finding wallpapers",
-                "Asking the source for photos...",
-            );
-            return;
-        }
-        if self.browse.photos.is_empty() && !self.browse.message.is_empty() {
-            let message = self.browse.message.clone();
-            empty_state(ui, icons::BROWSE, "No wallpapers to show", &message);
-            if self.browse.has_more && centered_button(ui, icons::RETRY, "Try again") {
-                self.browse.load_more(&shared.client);
-            }
-            return;
-        }
-        let items: Vec<Shown> = self
-            .browse
-            .photos
-            .iter()
-            .cloned()
-            .map(Shown::Remote)
-            .collect();
-        let scroll = egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                shared.shown = items.clone();
-                shared.gallery_rows(ui, &items);
-                if !self.browse.message.is_empty() {
-                    ui.add_space(8.0);
-                    ui.vertical_centered(|ui| ui.label(self.browse.message.clone()));
+        nodes.push(Node::Container {
+            id: scroll,
+            layout: Layout::Scroll,
+            children: list,
+        });
+        nodes
+    }
+
+    fn browse_toolbar(&mut self, kit: &mut Kit) -> Node {
+        let resolution = self.resolution_menu(kit);
+        let browse = &self.browse.browse;
+        let searchable = browse.source.has_search();
+        let hint = if searchable {
+            "Search wallpapers"
+        } else {
+            "This source has no search"
+        };
+        let search = kit.keyed("browse-search", |app, event| match event {
+            Event::Changed { text, .. } => app.browse.browse.text.clone_from(text),
+            Event::Submitted { .. } => app.browse.refresh(&mut app.shared),
+            _ => {}
+        });
+        let source = kit.keyed("browse-source", |app, event| {
+            if let Event::Selected { index, .. } = event {
+                if let Some(source) = Source::ALL.get(*index as usize) {
+                    app.browse.browse.source = *source;
+                    app.browse.refresh(&mut app.shared);
                 }
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    if self.browse.loading {
-                        ui.spinner();
-                    } else if self.browse.is_stalled()
-                        && icons::button(ui, icons::RETRY, "Try again").clicked()
-                    {
-                        self.browse.load_more(&shared.client);
-                    }
-                    ui.add_space(4.0);
-                    let source = self.browse.source;
-                    ui.hyperlink_to(
-                        egui::RichText::new(format!("Photos provided by {}", source.name()))
-                            .small(),
-                        source.home(),
-                    );
-                    ui.add_space(8.0);
-                });
-            });
-        // Starts before the very end, so scrolling rarely reaches a gap.
-        let bottom = scroll.state.offset.y + scroll.inner_rect.height();
-        if bottom + AUTO_LOAD_MARGIN >= scroll.content_size.y && self.browse.can_auto_load() {
-            self.browse.load_more(&shared.client);
+            }
+        });
+        let orientation = kit.keyed("browse-orientation", |app, event| {
+            if let Event::Selected { index, .. } = event {
+                if let Some(o) = ORIENTATIONS.get(*index as usize) {
+                    app.browse.browse.orientation = *o;
+                    app.browse.refresh(&mut app.shared);
+                }
+            }
+        });
+        Node::container(
+            Layout::Wrap,
+            vec![
+                TextEdit::new(browse.text.clone())
+                    .hint(hint)
+                    .disabled(!searchable)
+                    .node(search),
+                Select {
+                    selected: Source::ALL
+                        .iter()
+                        .position(|s| *s == browse.source)
+                        .map(|i| i as u32),
+                    placeholder: String::new(),
+                    options: Source::ALL.iter().map(|s| s.name().to_string()).collect(),
+                }
+                .node(source),
+                Select {
+                    selected: ORIENTATIONS
+                        .iter()
+                        .position(|o| *o == browse.orientation)
+                        .map(|i| i as u32),
+                    placeholder: String::new(),
+                    options: ORIENTATIONS
+                        .iter()
+                        .map(|o| orientation_name(*o).to_string())
+                        .collect(),
+                }
+                .node(orientation),
+                resolution,
+            ],
+        )
+    }
+
+    /// The minimum-resolution choice: the main display, any size, or a size.
+    fn resolution_menu(&mut self, kit: &mut Kit) -> Node {
+        let display_size = self.display_size;
+        let mut choices: Vec<Option<[u32; 2]>> = vec![None, Some([0, 0])];
+        choices.extend(RESOLUTIONS.iter().map(|&(w, h)| Some([w, h])));
+        let display = display_size.map_or("Main display".to_string(), |(w, h)| {
+            format!("Main display ({w} \u{d7} {h})")
+        });
+        let mut options = vec![display, "Any size".to_string()];
+        options.extend(RESOLUTIONS.iter().map(|(w, h)| format!("{w} \u{d7} {h}")));
+        let chosen = self.shared.settings().min_resolution;
+        let selected = choices.iter().position(|c| *c == chosen).map(|i| i as u32);
+        let id = kit.keyed(stable_id("browse-resolution"), move |app, event| {
+            if let Event::Selected { index, .. } = event {
+                let Some(choice) = choices.get(*index as usize).copied() else {
+                    return;
+                };
+                if app.shared.store.change(|s| s.min_resolution = choice) {
+                    app.browse.browse.min = effective_min(app.shared.settings(), display_size);
+                    app.browse.refresh(&mut app.shared);
+                }
+            }
+        });
+        Select {
+            selected,
+            placeholder: resolution_label(chosen, display_size),
+            options,
         }
+        .node(id)
     }
 }
 
@@ -158,30 +242,6 @@ fn resolution_label(min_resolution: Option<[u32; 2]>, display_size: Option<(u32,
         (None, None) | (Some([0, 0]), _) => "Any size".to_string(),
         (Some([w, h]), _) => format!("\u{2265} {w} \u{d7} {h}"),
     }
-}
-
-/// The minimum-resolution menu. Saves the choice and says whether it changed.
-fn resolution_menu(
-    ui: &mut egui::Ui,
-    shared: &mut Shared,
-    display_size: Option<(u32, u32)>,
-) -> bool {
-    let mut chosen = shared.settings().min_resolution;
-    let display = display_size.map_or("Main display".to_string(), |(w, h)| {
-        format!("Main display ({w} \u{d7} {h})")
-    });
-    let label = resolution_label(chosen, display_size);
-    egui::ComboBox::from_id_salt("min-resolution")
-        .selected_text(label)
-        .width(150.0)
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut chosen, None, display);
-            ui.selectable_value(&mut chosen, Some([0, 0]), "Any size");
-            for (w, h) in RESOLUTIONS {
-                ui.selectable_value(&mut chosen, Some([w, h]), format!("{w} \u{d7} {h}"));
-            }
-        });
-    shared.store.change(|s| s.min_resolution = chosen)
 }
 
 fn orientation_name(orientation: Orientation) -> &'static str {

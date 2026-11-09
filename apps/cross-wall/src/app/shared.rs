@@ -1,7 +1,7 @@
 //! What every screen works with: the network client, images, the wallpaper
 //! folder as last scanned, the settings, and the message shown to the user.
 //! Each screen keeps its own state in its own module.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -10,7 +10,6 @@ use cross_wall_library::{Entry, Snapshot};
 use cross_wall_sources::{Client, Progress};
 
 use super::apply_worker::{Applier, Image};
-use super::motion::Motion;
 use super::organise::Organiser;
 use super::shown::Shown;
 use crate::images::Images;
@@ -34,12 +33,11 @@ pub struct Shared {
     pub pending: HashMap<String, Arc<Progress>>,
     /// The items the current screen shows, in order, which the preview steps through.
     pub shown: Vec<Shown>,
-    /// An item to open in the preview, set by a click on its tile.
-    pub open: Option<Shown>,
     pub apply: Applier,
     pub organiser: Organiser,
     pub picker: FolderPicker,
-    pub motion: Motion,
+    /// Items whose tile has been on screen, so a forgotten thumbnail reloads.
+    pub seen: HashSet<String>,
     /// The latest message for the user. Empty when there is none.
     pub status: String,
 }
@@ -58,11 +56,10 @@ impl Shared {
             store,
             pending: HashMap::new(),
             shown: Vec::new(),
-            open: None,
             apply: Applier::new(data_dir.join("wallpaper")),
             organiser: Organiser::default(),
             picker: FolderPicker::new(),
-            motion: Motion::default(),
+            seen: HashSet::new(),
             status: String::new(),
         }
     }

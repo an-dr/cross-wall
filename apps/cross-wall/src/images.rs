@@ -1,10 +1,13 @@
-//! Loads and decodes images on worker threads and hands egui textures to the frame thread.
+//! Loads and decodes images on worker threads and uploads them to bones' ui
+//! module from the frame thread, where widgets show them by handle.
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
+
+use bones_kernel::ui::UiPort;
 
 const MIN_WORKERS: usize = 4;
 const MAX_WORKERS: usize = 8;
@@ -15,7 +18,8 @@ const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const MAX_CACHE_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub type Bytes = Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send>;
-type Decoded = Result<egui::ColorImage, String>;
+/// Width, height, and straight RGBA8 pixels.
+type Decoded = Result<(u32, u32, Vec<u8>), String>;
 
 /// Newest first: what is on screen now was asked for last, and should not wait
 /// behind photos already scrolled past.
@@ -53,7 +57,10 @@ impl JobStack {
 
 pub enum Slot {
     Loading,
-    Ready(egui::TextureHandle),
+    /// Uploaded under `handle`.
+    Ready {
+        handle: u32,
+    },
     Failed(String),
 }
 
@@ -64,6 +71,9 @@ pub struct Images {
     done_tx: Sender<(String, Decoded)>,
     /// Images asked for since the queue was last empty, for the progress bar.
     batch: usize,
+    next_handle: u32,
+    /// Uploaded images forgotten since the last poll, to free in the ui module.
+    to_free: Vec<u32>,
 }
 
 impl Images {
@@ -88,6 +98,8 @@ impl Images {
             done,
             done_tx,
             batch: 0,
+            next_handle: 0,
+            to_free: Vec::new(),
         }
     }
 
@@ -121,21 +133,47 @@ impl Images {
         }
     }
 
-    /// Frees full-size images other than those named.
-    pub fn retain_large(&mut self, keep: &std::collections::HashSet<String>) {
-        self.slots
-            .retain(|key, _| !key.starts_with("large/") || keep.contains(key));
+    /// The handle of the image under `key`, once it is uploaded.
+    pub fn handle(&self, key: &str) -> Option<u32> {
+        match self.slots.get(key) {
+            Some(Slot::Ready { handle, .. }) => Some(*handle),
+            _ => None,
+        }
     }
 
-    pub fn poll(&mut self, ctx: &egui::Context) {
+    /// Frees full-size images other than those named.
+    pub fn retain_large(&mut self, keep: &std::collections::HashSet<String>) {
+        self.retain(|key| !key.starts_with("large/") || keep.contains(key));
+    }
+
+    fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        let to_free = &mut self.to_free;
+        self.slots.retain(|key, slot| {
+            let kept = keep(key);
+            if let (false, Slot::Ready { handle, .. }) = (kept, slot) {
+                to_free.push(*handle);
+            }
+            kept
+        });
+    }
+
+    /// Uploads what the workers finished and frees what was forgotten, as
+    /// `owner`'s images.
+    pub fn poll(&mut self, port: &mut dyn UiPort, owner: &str) {
+        for handle in self.to_free.drain(..) {
+            port.free_image(owner, handle);
+        }
         while let Ok((key, decoded)) = self.done.try_recv() {
-            // Forgotten while it loaded: keeping it would hold a texture nobody can free.
+            // Forgotten while it loaded: keeping it would hold an image nobody can free.
             if !self.slots.contains_key(&key) {
                 continue;
             }
             let slot = match decoded {
-                Ok(image) => {
-                    Slot::Ready(ctx.load_texture(&key, image, egui::TextureOptions::LINEAR))
+                Ok((width, height, rgba)) => {
+                    self.next_handle += 1;
+                    let handle = self.next_handle;
+                    port.set_image(owner, handle, width, height, rgba);
+                    Slot::Ready { handle }
                 }
                 Err(error) => Slot::Failed(error),
             };
@@ -158,9 +196,9 @@ impl Images {
         Some((self.batch - waiting, self.batch))
     }
 
-    /// Frees textures whose keys start with `prefix`, such as a replaced result list.
+    /// Frees images whose keys start with `prefix`, such as a replaced result list.
     pub fn forget(&mut self, prefix: &str) {
-        self.slots.retain(|key, _| !key.starts_with(prefix));
+        self.retain(|key| !key.starts_with(prefix));
     }
 }
 
@@ -182,11 +220,7 @@ fn decode(bytes: &[u8], limit: u32) -> Decoded {
         image
     };
     let image = image.to_rgba8();
-    let size = [image.width() as usize, image.height() as usize];
-    Ok(egui::ColorImage::from_rgba_unmultiplied(
-        size,
-        image.as_raw(),
-    ))
+    Ok((image.width(), image.height(), image.into_raw()))
 }
 
 /// Reads `path`, or fetches and stores it. A failed cache write only costs a later refetch.
@@ -264,18 +298,6 @@ fn prune_cache_to(dir: &Path, max_bytes: u64) {
     }
 }
 
-/// The part of a texture filling a box of `target` shape without distorting it.
-pub fn cover_uv(image: [usize; 2], target: egui::Vec2) -> egui::Rect {
-    let image_ratio = image[0] as f32 / image[1].max(1) as f32;
-    let target_ratio = target.x / target.y;
-    let (w, h) = if image_ratio > target_ratio {
-        (target_ratio / image_ratio, 1.0)
-    } else {
-        (1.0, image_ratio / target_ratio)
-    };
-    egui::Rect::from_center_size(egui::pos2(0.5, 0.5), egui::vec2(w, h))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,31 +333,71 @@ mod tests {
     }
 
     #[test]
-    fn cover_crops_the_long_side() {
-        let wide = cover_uv([200, 100], egui::vec2(100.0, 100.0));
-        assert!((wide.width() - 0.5).abs() < 1e-6 && wide.height() == 1.0);
-        let tall = cover_uv([100, 200], egui::vec2(100.0, 100.0));
-        assert!((tall.height() - 0.5).abs() < 1e-6 && tall.width() == 1.0);
-    }
-
-    #[test]
     fn big_images_are_reduced_to_the_limit() {
         let mut png = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(100, 50)
             .write_to(&mut png, image::ImageFormat::Png)
             .unwrap();
-        assert_eq!(decode(png.get_ref(), 20).unwrap().size, [20, 10]);
+        let (width, height, rgba) = decode(png.get_ref(), 20).unwrap();
+        assert_eq!((width, height, rgba.len()), (20, 10, 20 * 10 * 4));
+    }
+
+    /// Records uploads instead of showing them.
+    #[derive(Default)]
+    struct Uploads {
+        set: Vec<u32>,
+        freed: Vec<u32>,
+    }
+
+    impl UiPort for Uploads {
+        fn show(&mut self, _: &str, _: bones_kernel::messages::ui::Spec) {}
+        fn take_events(&mut self, _: &str) -> Vec<bones_kernel::messages::ui::Event> {
+            Vec::new()
+        }
+        fn set_zoom(&mut self, _: f32) {}
+        fn set_image(&mut self, _: &str, handle: u32, _: u32, _: u32, _: Vec<u8>) {
+            self.set.push(handle);
+        }
+        fn free_image(&mut self, _: &str, handle: u32) {
+            self.freed.push(handle);
+        }
+        fn set_theme(&mut self, _: bones_kernel::ui::Theme) {}
     }
 
     #[test]
     fn an_image_forgotten_while_loading_is_dropped() {
-        let ctx = egui::Context::default();
+        let mut uploads = Uploads::default();
         let mut images = Images::new();
         images.get("large/a", || Box::new(|| Err("x".into())));
         images.retain_large(&std::collections::HashSet::new());
         std::thread::sleep(Duration::from_millis(100));
-        images.poll(&ctx);
+        images.poll(&mut uploads, "app");
         assert!(images.slots.is_empty());
+        assert!(uploads.set.is_empty());
+    }
+
+    #[test]
+    fn a_loaded_image_is_uploaded_and_freed_when_forgotten() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(4, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = png.into_inner();
+        let mut uploads = Uploads::default();
+        let mut images = Images::new();
+        images.get("thumb/a", move || Box::new(move || Ok(bytes)));
+        for _ in 0..50 {
+            images.poll(&mut uploads, "app");
+            if images.handle("thumb/a").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let handle = images.handle("thumb/a").expect("the image never loaded");
+        assert_eq!(uploads.set, [handle]);
+        images.forget("thumb/");
+        images.poll(&mut uploads, "app");
+        assert_eq!(uploads.freed, [handle]);
     }
 
     #[test]

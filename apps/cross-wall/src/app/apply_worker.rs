@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cross_wall_library::extension_for;
 use cross_wall_sources::{Client, Progress};
 
-use super::widgets::progress_text;
+use super::tiles::progress_text;
 use crate::clock::now;
 
 /// Where the image to apply comes from.

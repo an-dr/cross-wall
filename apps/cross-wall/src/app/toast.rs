@@ -1,58 +1,57 @@
 //! The latest message, shown over the window for a few seconds.
+use std::time::{Duration, Instant};
+
+use bones_kernel::messages::ui::kinds::Toast as ToastWidget;
+use bones_kernel::messages::ui::{Layout, Node, WidgetProps};
+
+use super::kit::{stable_id, Kit};
 use super::shared::Shared;
 use crate::logs;
 
-const TOAST_SECONDS: f64 = 8.0;
+const TOAST_TIME: Duration = Duration::from_secs(8);
 
 #[derive(Default)]
 pub struct Toast {
     /// The message on screen and when it appeared.
-    shown: (String, f64),
+    shown: Option<(String, Instant)>,
 }
 
 impl Toast {
-    pub fn ui(&mut self, ctx: &egui::Context, shared: &mut Shared) {
-        let time = ctx.input(|i| i.time);
+    /// The toast for this frame, if a message is current.
+    pub fn view(&mut self, kit: &mut Kit, shared: &mut Shared) -> Option<Node> {
         let applying = shared.apply.is_busy();
         if applying {
             shared.status = shared.apply.progress_text();
-        } else if shared.status != self.shown.0 && !shared.status.is_empty() {
-            logs::info("status", &shared.status);
         }
-        if shared.status != self.shown.0 {
-            self.shown = (shared.status.clone(), time);
+        let changed = self.shown.as_ref().map(|(text, _)| text) != Some(&shared.status);
+        if changed {
+            if !applying && !shared.status.is_empty() {
+                logs::info("status", &shared.status);
+            }
+            self.shown = Some((shared.status.clone(), Instant::now()));
         }
         if shared.status.is_empty() {
-            return;
+            return None;
         }
-        if time - self.shown.1 > TOAST_SECONDS {
+        let started = self.shown.as_ref().map(|(_, at)| *at)?;
+        if !applying && started.elapsed() > TOAST_TIME {
             shared.status.clear();
-            return;
+            return None;
         }
-        let phase_key = if applying {
-            "applying".to_string()
-        } else {
-            shared.status.clone()
-        };
-        let appear = shared.motion.transition(ctx, "toast", phase_key);
-        egui::Area::new(egui::Id::new("toast"))
-            .order(egui::Order::Tooltip)
-            .anchor(
-                egui::Align2::CENTER_BOTTOM,
-                egui::vec2(0.0, -20.0 + (1.0 - appear) * 12.0),
-            )
-            .show(ctx, |ui| {
-                ui.set_opacity(appear);
-                egui::Frame::popup(ui.style())
-                    .inner_margin(10)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(&shared.status);
-                            if ui.small_button("\u{d7}").clicked() {
-                                shared.status.clear();
-                            }
-                        });
-                    });
-            });
+        let close = kit.on(|app, _| app.shared.status.clear());
+        let toast = ToastWidget {
+            text: shared.status.clone(),
+        }
+        .node(close);
+        // A new message fades in. Applying updates its text as it goes, which
+        // is one toast, so it is not wrapped and does not flicker.
+        if applying {
+            return Some(toast);
+        }
+        Some(Node::Container {
+            id: stable_id("toast"),
+            layout: Layout::Fade,
+            children: vec![toast],
+        })
     }
 }

@@ -471,16 +471,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "concat-idents"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f76990911f2267d837d9d0ad060aa63aaad170af40904b29461734c339030d4d"
-dependencies = [
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -527,15 +517,11 @@ dependencies = [
 name = "cross-wall"
 version = "0.3.1"
 dependencies = [
- "arboard",
  "bones-kernel",
  "cross-wall-apply",
  "cross-wall-library",
  "cross-wall-sources",
  "dirs",
- "egui",
- "egui-phosphor",
- "egui_animation",
  "image",
  "open",
  "rfd",
@@ -543,7 +529,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "winreg",
  "winresource",
 ]
 
@@ -709,26 +694,6 @@ dependencies = [
  "profiling",
  "smallvec",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "egui-phosphor"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80049258178b29a9807b15b5bcf3d60722a22a91d03bc9316935dec5ed5ed2e0"
-dependencies = [
- "egui",
-]
-
-[[package]]
-name = "egui_animation"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f413d1209497f01f09c2105bde6fe12528722440199ef3f8b8718f1de6dbe8d"
-dependencies = [
- "egui",
- "hello_egui_utils",
- "simple-easing",
 ]
 
 [[package]]
@@ -1015,16 +980,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
-name = "hello_egui_utils"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea8d21d4cd2b323f7703a43fb72c0f58da649387538a96c67b02fc3967ed55dc"
-dependencies = [
- "concat-idents",
- "egui",
-]
 
 [[package]]
 name = "hermit-abi"
@@ -2055,12 +2010,6 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
-
-[[package]]
-name = "simple-easing"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99968bca2a24946625e54935909e9c1c314066a1005f5a302a5e4bfc83b0239a"
 
 [[package]]
 name = "slab"

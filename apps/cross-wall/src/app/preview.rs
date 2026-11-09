@@ -3,15 +3,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use bones_kernel::messages::ui::kinds::{Hyperlink, IconButton, Label, Strong};
+use bones_kernel::messages::ui::{icons, Event, Layout, Node, WidgetProps};
 use cross_wall_sources::Progress;
-use egui_animation::{animate_bool_eased, easing};
 
-use super::motion::eased_since;
+use super::kit::Kit;
 use super::shared::Shared;
 use super::shown::Shown;
-use super::widgets::progress_text;
+use super::tiles::progress_text;
+use super::CrossWall;
 use crate::gallery;
-use crate::icons;
 use crate::images::{self, Slot};
 
 /// Items loaded ahead on each side of the open one.
@@ -22,167 +23,44 @@ pub struct Preview {
     open: Option<Shown>,
     /// Download progress of each full-size image, by `Shown::key`.
     progress: HashMap<String, Arc<Progress>>,
-    /// The direction and start time of the last step between items.
-    step: (f32, f64),
-    /// What the preview last drew, so it can fade out after closing.
-    last: Option<(egui::TextureHandle, egui::Rect)>,
 }
 
 impl Preview {
-    pub fn ui(&mut self, ctx: &egui::Context, shared: &mut Shared) {
-        if let Some(item) = shared.open.take() {
-            self.open = Some(item);
-        }
-        let opened = animate_bool_eased(
-            ctx,
-            "preview-open",
-            self.open.is_some(),
-            easing::cubic_out,
-            0.18,
-        );
-        let Some(item) = self.open.clone() else {
-            self.fade_out(ctx, opened);
-            return;
-        };
-        let key = item.key();
-        let source = self.large_source(shared, &item);
-        let progress = self.progress_for(&key);
-        let screen = ctx.screen_rect();
-        let position = shared.shown.iter().position(|s| s.key() == key);
-        self.preload_around(shared, &key, position);
-        let time = ctx.input(|i| i.time);
-        let stepped = eased_since(self.step.1, time);
-        let step_offset = self.step.0 * (1.0 - stepped) * 48.0;
-        let mut step = ctx.input(|i| {
-            i32::from(i.key_pressed(egui::Key::ArrowRight))
-                - i32::from(i.key_pressed(egui::Key::ArrowLeft))
-        });
-        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Area::new(egui::Id::new("preview"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                // Takes the pointer, so nothing behind the preview reacts.
-                ui.allocate_rect(screen, egui::Sense::click_and_drag());
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    egui::Color32::from_black_alpha((242.0 * opened) as u8),
-                );
-                let stage = egui::Rect::from_min_max(
-                    screen.min + egui::vec2(64.0, 20.0),
-                    screen.max - egui::vec2(64.0, 76.0),
-                );
-                let large = match shared.images.get(&format!("large/{key}"), || source) {
-                    Slot::Ready(texture) => Some(texture.clone()),
-                    Slot::Failed(error) => {
-                        let error = error.clone();
-                        ui.put(
-                            stage,
-                            egui::Label::new(
-                                egui::RichText::new(error).color(egui::Color32::WHITE),
-                            ),
-                        );
-                        None
-                    }
-                    Slot::Loading => {
-                        open_progress(ui, stage, progress.read());
-                        None
-                    }
-                };
-                if let Some(texture) = large {
-                    let size = texture.size_vec2();
-                    let fit = (stage.width() / size.x).min(stage.height() / size.y);
-                    let grow = 0.97 + 0.03 * opened;
-                    let centre = stage.center() + egui::vec2(step_offset, 0.0);
-                    let rect = egui::Rect::from_center_size(centre, size * fit * grow);
-                    self.last = Some((texture.clone(), rect));
-                    let radius = ui.visuals().widgets.inactive.corner_radius;
-                    let tint = egui::Color32::WHITE.gamma_multiply(opened * stepped);
-                    egui::Image::new(&texture)
-                        .tint(tint)
-                        .corner_radius(radius)
-                        .maintain_aspect_ratio(false)
-                        .paint_at(ui, rect);
-                }
-                let visuals = ui.visuals_mut();
-                visuals.override_text_color = Some(egui::Color32::WHITE);
-                visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_white_alpha(30);
-                visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_white_alpha(60);
-                visuals.widgets.active.weak_bg_fill = egui::Color32::from_white_alpha(80);
-                let round = |ui: &mut egui::Ui, centre: egui::Pos2, text: &str| {
-                    let rect = egui::Rect::from_center_size(centre, egui::vec2(38.0, 38.0));
-                    ui.put(
-                        rect,
-                        egui::Button::new(egui::RichText::new(text).size(18.0)).corner_radius(19),
-                    )
-                    .clicked()
-                };
-                close |= round(ui, screen.right_top() + egui::vec2(-32.0, 32.0), "\u{d7}");
-                if position.is_some_and(|p| p > 0)
-                    && round(
-                        ui,
-                        egui::pos2(screen.left() + 32.0, stage.center().y),
-                        "\u{2039}",
-                    )
-                {
-                    step = -1;
-                }
-                if position.is_some_and(|p| p + 1 < shared.shown.len())
-                    && round(
-                        ui,
-                        egui::pos2(screen.right() - 32.0, stage.center().y),
-                        "\u{203a}",
-                    )
-                {
-                    step = 1;
-                }
-                let bar = egui::Rect::from_min_max(
-                    egui::pos2(screen.left() + 24.0, screen.bottom() - 60.0),
-                    screen.right_bottom() - egui::vec2(24.0, 12.0),
-                );
-                let layout = egui::Layout::left_to_right(egui::Align::Center);
-                ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
-                    let credit = item.credit();
-                    if credit.link.is_empty() {
-                        ui.strong(credit.name);
-                    } else {
-                        ui.hyperlink_to(egui::RichText::new(credit.name).strong(), credit.link);
-                    }
-                    let (width, height) = item.size();
-                    if width > 0 {
-                        ui.label(format!("{width} \u{d7} {height}"));
-                    }
-                    if !credit.license.is_empty() {
-                        ui.label(credit.license);
-                    }
-                    if !credit.page.is_empty() {
-                        ui.hyperlink_to(
-                            icons::with(icons::OPEN_LINK, "View at the source"),
-                            credit.page,
-                        );
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if shared.apply.is_busy() {
-                            ui.spinner();
-                        } else if icons::primary(ui, icons::APPLY, "Apply").clicked() {
-                            shared.start_apply(&item);
-                        }
-                        shared.keep_buttons(ui, &item);
-                    });
-                });
-            });
-        let next = position
-            .and_then(|p| p.checked_add_signed(step as isize))
-            .filter(|_| step != 0)
+    pub fn open(&mut self, item: Shown) {
+        self.open = Some(item);
+    }
+
+    fn close(&mut self, shared: &mut Shared) {
+        self.open = None;
+        shared.images.retain_large(&HashSet::new());
+        self.progress.clear();
+    }
+
+    /// Moves to the item `step` places away in what the screen shows.
+    fn step(&mut self, shared: &Shared, step: isize) {
+        let Some(open) = &self.open else { return };
+        let key = open.key();
+        let next = shared
+            .shown
+            .iter()
+            .position(|s| s.key() == key)
+            .and_then(|p| p.checked_add_signed(step))
             .and_then(|p| shared.shown.get(p).cloned());
         if next.is_some() {
-            self.step = (step.signum() as f32, time);
             self.open = next;
-        } else if close {
-            self.open = None;
-            shared.images.retain_large(&HashSet::new());
-            self.progress.clear();
+        }
+    }
+
+    /// Arrow keys step and Escape closes, while the preview is open.
+    pub fn on_key(&mut self, shared: &mut Shared, key: &str) {
+        if self.open.is_none() {
+            return;
+        }
+        match key {
+            "ArrowRight" => self.step(shared, 1),
+            "ArrowLeft" => self.step(shared, -1),
+            "Escape" => self.close(shared),
+            _ => {}
         }
     }
 
@@ -244,70 +122,115 @@ impl Preview {
             }
         }
     }
-
-    /// Lets the last image and the backdrop fade away after closing.
-    fn fade_out(&mut self, ctx: &egui::Context, opened: f32) {
-        if opened <= 0.0 {
-            self.last = None;
-            return;
-        }
-        let Some((texture, rect)) = self.last.clone() else {
-            return;
-        };
-        let area = egui::Area::new(egui::Id::new("preview-closing"))
-            .order(egui::Order::Foreground)
-            .interactable(false);
-        area.fixed_pos(ctx.screen_rect().min).show(ctx, |ui| {
-            let screen = ctx.screen_rect();
-            ui.painter().rect_filled(
-                screen,
-                0.0,
-                egui::Color32::from_black_alpha((242.0 * opened) as u8),
-            );
-            let tint = egui::Color32::WHITE.gamma_multiply(opened);
-            egui::Image::new(&texture)
-                .tint(tint)
-                .maintain_aspect_ratio(false)
-                .paint_at(ui, rect);
-        });
-    }
 }
 
-/// What the preview shows while a big image opens: a bar with sizes while it
-/// downloads, then a message while it is decoded, which has no measurable progress.
-fn open_progress(ui: &mut egui::Ui, stage: egui::Rect, (done, total): (u64, Option<u64>)) {
-    let white = egui::Color32::WHITE;
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let below = stage.center() + egui::vec2(0.0, 34.0);
-    let fetching = total.is_some_and(|t| done < t);
-    if fetching {
-        let fraction = done as f32 / total.unwrap_or(1).max(1) as f32;
-        let width = stage.width().min(420.0);
-        let track = egui::Rect::from_center_size(stage.center(), egui::vec2(width, 6.0));
-        ui.painter()
-            .rect_filled(track, 3.0, egui::Color32::from_white_alpha(50));
-        let mut bar = track;
-        bar.set_width(width * fraction);
-        ui.painter()
-            .rect_filled(bar, 3.0, ui.visuals().selection.bg_fill);
-        ui.painter().text(
-            below,
-            egui::Align2::CENTER_TOP,
-            progress_text((done, total), "Downloading"),
-            font,
-            white,
-        );
-    } else {
-        ui.put(
-            egui::Rect::from_center_size(stage.center(), egui::vec2(32.0, 32.0)),
-            egui::Spinner::new().color(white).size(32.0),
-        );
-        let text = if done > 0 || total.is_some() {
-            "Preparing image"
-        } else {
-            "Opening image"
+impl CrossWall {
+    /// The open item over the whole window, if one is open.
+    pub fn preview_view(&mut self, kit: &mut Kit) -> Option<Node> {
+        let item = self.preview.open.clone()?;
+        let key = item.key();
+        let position = self.shared.shown.iter().position(|s| s.key() == key);
+        self.preview
+            .preload_around(&mut self.shared, &key, position);
+        let source = self.preview.large_source(&self.shared, &item);
+        let progress = self.preview.progress_for(&key);
+        let slot_key = format!("large/{key}");
+        let (image, problem) = match self.shared.images.get(&slot_key, || source) {
+            Slot::Ready { handle, .. } => (*handle, None),
+            Slot::Failed(error) => (0, Some(error.clone())),
+            Slot::Loading => (0, None),
         };
-        ui.painter()
-            .text(below, egui::Align2::CENTER_TOP, text, font, white);
+
+        let mut bar = Vec::new();
+        let credit = item.credit();
+        if credit.link.is_empty() {
+            bar.push(
+                Strong {
+                    text: credit.name.to_string(),
+                }
+                .node(0),
+            );
+        } else {
+            bar.push(
+                Hyperlink {
+                    label: credit.name.to_string(),
+                    url: credit.link.to_string(),
+                }
+                .node(0),
+            );
+        }
+        let (width, height) = item.size();
+        if width > 0 {
+            bar.push(
+                Label {
+                    text: format!("{width} \u{d7} {height}"),
+                }
+                .node(0),
+            );
+        }
+        if !credit.license.is_empty() {
+            bar.push(
+                Label {
+                    text: credit.license.to_string(),
+                }
+                .node(0),
+            );
+        }
+        if !credit.page.is_empty() {
+            bar.push(
+                Hyperlink {
+                    label: format!("{}  View at the source", icons::EXTERNAL_LINK),
+                    url: credit.page.to_string(),
+                }
+                .node(0),
+            );
+        }
+        if let Some(problem) = problem {
+            bar.push(Label { text: problem }.node(0));
+        } else if image == 0 {
+            let (done, total) = progress.read();
+            let text = if total.is_some_and(|t| done < t) {
+                progress_text((done, total), "Downloading")
+            } else if done > 0 || total.is_some() {
+                "Preparing image".to_string()
+            } else {
+                "Opening image".to_string()
+            };
+            bar.push(Label { text }.node(0));
+        }
+        let mut trailing = Vec::new();
+        if self.shared.apply.is_busy() {
+            trailing.push(
+                Label {
+                    text: self.shared.apply.progress_text(),
+                }
+                .node(0),
+            );
+        } else {
+            let applied = item.clone();
+            let id = kit.on(move |app, _| app.shared.start_apply(&applied));
+            trailing.push(IconButton::new("wallpaper", "Apply").primary(true).node(id));
+        }
+        trailing.extend(self.keep_buttons(kit, &item, false));
+        bar.push(Node::container(Layout::RightToLeft, trailing));
+
+        let count = self.shared.shown.len();
+        let stage = kit.keyed("preview", |app, event| match event {
+            Event::Clicked { .. } => app.preview.close(&mut app.shared),
+            Event::Selected { index, .. } => {
+                let step = if *index == 0 { -1 } else { 1 };
+                app.preview.step(&app.shared, step);
+            }
+            _ => {}
+        });
+        Some(Node::Container {
+            id: stage,
+            layout: Layout::Stage {
+                image,
+                previous: position.is_some_and(|p| p > 0),
+                next: position.is_some_and(|p| p + 1 < count),
+            },
+            children: bar,
+        })
     }
 }
