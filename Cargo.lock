@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "bones-kernel"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "anyhow",
  "bones-kernel-infra",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "bones-kernel-infra"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "bones-messages",
  "pubsub-bus",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "bones-launcher"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "bones-versioning",
  "winresource",
@@ -342,11 +342,11 @@ dependencies = [
 
 [[package]]
 name = "bones-messages"
-version = "1.4.0"
+version = "2.0.0"
 
 [[package]]
 name = "bones-module-desktop"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "bones-kernel-infra",
  "bones-messages",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "bones-module-renderer"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "ab_glyph",
  "bones-kernel-infra",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "bones-module-ui"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "arboard",
  "bones-kernel-infra",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "bones-module-upgrade"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "base64",
  "bones-kernel-infra",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "bones-versioning"
-version = "4.0.0"
+version = "5.0.1"
 dependencies = [
  "semver",
 ]
