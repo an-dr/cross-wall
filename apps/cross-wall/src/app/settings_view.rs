@@ -3,10 +3,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 use bones_kernel::messages::upgrader::Action;
 
-use super::look::Look;
+use bones_kernel::messages::ui::kinds::{
+    Button, Checkbox, Heading, IconButton, Label, Selectable, Slider, Space, Strong, TextEdit,
+};
+use bones_kernel::messages::ui::{Event, Layout, Node, WidgetProps};
+
+use super::kit::{stable_id, Kit};
 use super::shared::Shared;
-use super::widgets::card;
-use crate::icons;
+use super::CrossWall;
 use crate::installation::{self, UpdateState};
 use crate::logs;
 use crate::settings::ThemeMode;
@@ -14,6 +18,8 @@ use crate::settings::ThemeMode;
 pub struct SettingsView {
     /// What the folder field shows while it is being edited.
     folder_text: String,
+    /// Whether the folder field holds typed text not yet applied.
+    editing_folder: bool,
     update_requests: Sender<Action>,
     update_results: Receiver<UpdateState>,
     update_available: Option<String>,
@@ -35,6 +41,7 @@ impl SettingsView {
         let (registration_tx, registration_rx) = channel();
         Self {
             folder_text: String::new(),
+            editing_folder: false,
             update_requests,
             update_results,
             update_available: None,
@@ -43,75 +50,6 @@ impl SettingsView {
             registration_tx,
             registration_rx,
         }
-    }
-
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, look: &mut Look) {
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            ui.set_max_width(ui.available_width().min(680.0));
-            ui.heading("Settings");
-            card(ui, "Wallpaper folder", |ui| {
-                ui.label("Downloads go to the root of this folder. Your images and subfolders in it appear in the Library.");
-                ui.horizontal(|ui| {
-                    if icons::button(ui, icons::CHOOSE, "Choose").clicked() {
-                        shared.picker.open();
-                    }
-                    let edit = ui.add(egui::TextEdit::singleline(&mut self.folder_text).desired_width(f32::INFINITY));
-                    // A typed path is used once the field is left, not at every key.
-                    if edit.lost_focus() {
-                        shared.set_folder(self.folder_text.clone());
-                    } else if !edit.has_focus() {
-                        self.folder_text.clone_from(&shared.settings().wallpaper_folder);
-                    }
-                });
-            });
-            card(ui, "Appearance", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Theme");
-                    let mut mode = shared.settings().theme;
-                    for (value, name) in [(ThemeMode::Dark, "Dark"), (ThemeMode::Light, "Light"), (ThemeMode::System, "System")] {
-                        ui.selectable_value(&mut mode, value, name);
-                    }
-                    if shared.store.change(|s| s.theme = mode) {
-                        look.apply(ui.ctx(), mode);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Interface zoom");
-                    let mut zoom = shared.settings().ui_zoom;
-                    ui.add(egui::Slider::new(&mut zoom, 0.5..=2.0));
-                    shared.store.change(|s| s.ui_zoom = zoom);
-                });
-            });
-            ui.add_space(8.0);
-            card(ui, "App", |ui| {
-                self.install_ui(ui, shared);
-                ui.add_space(4.0);
-                logging_ui(ui, shared);
-            });
-        });
-    }
-
-    fn install_ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        ui.label(format!("Version {}", installation::VERSION));
-        ui.horizontal(|ui| {
-            if icons::button(ui, icons::UPDATE, "Check for updates").clicked() {
-                shared.status = "Checking for updates...".into();
-                let _ = self.update_requests.send(Action::Check);
-            }
-            if let Some(version) = self.update_available.clone() {
-                if icons::primary(ui, icons::DOWNLOAD, &format!("Update to {version}")).clicked() {
-                    shared.status = "Downloading the update...".into();
-                    let _ = self.update_requests.send(Action::Stage);
-                }
-            }
-            if !self.installed && icons::button(ui, icons::INSTALL, "Install").clicked() {
-                shared.status = "Installing...".into();
-                let _ = self.update_requests.send(Action::Install);
-            }
-            if self.registered && ui.button("Unregister").clicked() {
-                self.register_in_background(false);
-            }
-        });
     }
 
     fn register_in_background(&self, add: bool) {
@@ -171,25 +109,190 @@ impl SettingsView {
     }
 }
 
-fn logging_ui(ui: &mut egui::Ui, shared: &mut Shared) {
-    ui.horizontal(|ui| {
-        let mut enabled = shared
+/// A titled group of related settings: a card with a strong title.
+fn card(title: &str, mut content: Vec<Node>) -> Node {
+    content.insert(
+        0,
+        Strong {
+            text: title.to_string(),
+        }
+        .node(0),
+    );
+    Node::container(Layout::Frame, content)
+}
+
+impl CrossWall {
+    pub fn settings_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        if !self.settings.editing_folder {
+            self.settings
+                .folder_text
+                .clone_from(&self.shared.settings().wallpaper_folder);
+        }
+        let choose = kit.on(|app, _| app.shared.picker.open());
+        let folder = kit.keyed("settings-folder", |app, event| match event {
+            Event::Changed { text, .. } => {
+                app.settings.folder_text.clone_from(text);
+                app.settings.editing_folder = true;
+            }
+            Event::Submitted { .. } => {
+                app.settings.editing_folder = false;
+                let folder = app.settings.folder_text.clone();
+                app.shared.set_folder(folder);
+            }
+            _ => {}
+        });
+        let folder_card = card(
+            "Wallpaper folder",
+            vec![
+                Label {
+                    text: "Downloads go to the root of this folder. Your images and subfolders in it appear in the Library. Press Enter to use a typed path.".into(),
+                }
+                .node(0),
+                Node::container(
+                    Layout::Horizontal,
+                    vec![
+                        IconButton::new("folder-open", "Choose").node(choose),
+                        TextEdit::new(self.settings.folder_text.clone()).node(folder),
+                    ],
+                ),
+            ],
+        );
+
+        let mode = self.shared.settings().theme;
+        let mut theme_row = vec![Label {
+            text: "Theme".into(),
+        }
+        .node(0)];
+        for (value, name) in [
+            (ThemeMode::Dark, "Dark"),
+            (ThemeMode::Light, "Light"),
+            (ThemeMode::System, "System"),
+        ] {
+            let id = kit.on(move |app, _| {
+                app.shared.store.change(|s| s.theme = value);
+            });
+            theme_row.push(
+                Selectable {
+                    label: name.into(),
+                    selected: mode == value,
+                }
+                .node(id),
+            );
+        }
+        let zoom = kit.keyed("settings-zoom", |app, event| {
+            if let Event::ValueChanged { value, .. } = event {
+                let value = *value;
+                app.shared.store.change(|s| s.ui_zoom = value);
+            }
+        });
+        let appearance = card(
+            "Appearance",
+            vec![
+                Node::container(Layout::Horizontal, theme_row),
+                Node::container(
+                    Layout::Horizontal,
+                    vec![
+                        Label {
+                            text: "Interface zoom".into(),
+                        }
+                        .node(0),
+                        Slider {
+                            value: self.shared.settings().ui_zoom,
+                            min: 0.5,
+                            max: 2.0,
+                        }
+                        .node(zoom),
+                    ],
+                ),
+            ],
+        );
+        let mut app_card = self.install_view(kit);
+        app_card.push(Space { amount: 4.0 }.node(0));
+        app_card.push(self.logging_view(kit));
+        vec![Node::Container {
+            id: stable_id("settings-scroll"),
+            layout: Layout::Scroll,
+            children: vec![
+                Heading {
+                    text: "Settings".into(),
+                }
+                .node(0),
+                folder_card,
+                appearance,
+                Space { amount: 8.0 }.node(0),
+                card("App", app_card),
+            ],
+        }]
+    }
+
+    fn install_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        let mut buttons = Vec::new();
+        let check = kit.on(|app, _| {
+            app.shared.status = "Checking for updates...".into();
+            let _ = app.settings.update_requests.send(Action::Check);
+        });
+        buttons.push(IconButton::new("refresh-cw", "Check for updates").node(check));
+        if let Some(version) = self.settings.update_available.clone() {
+            let stage = kit.on(|app, _| {
+                app.shared.status = "Downloading the update...".into();
+                let _ = app.settings.update_requests.send(Action::Stage);
+            });
+            buttons.push(
+                IconButton::new("download", format!("Update to {version}"))
+                    .primary(true)
+                    .node(stage),
+            );
+        }
+        if !self.settings.installed {
+            let install = kit.on(|app, _| {
+                app.shared.status = "Installing...".into();
+                let _ = app.settings.update_requests.send(Action::Install);
+            });
+            buttons.push(IconButton::new("hard-drive-download", "Install").node(install));
+        }
+        if self.settings.registered {
+            let unregister = kit.on(|app, _| app.settings.register_in_background(false));
+            buttons.push(Button::new("Unregister").node(unregister));
+        }
+        vec![
+            Label {
+                text: format!("Version {}", installation::VERSION),
+            }
+            .node(0),
+            Node::container(Layout::Horizontal, buttons),
+        ]
+    }
+
+    fn logging_view(&mut self, kit: &mut Kit) -> Node {
+        let enabled = self
+            .shared
             .settings()
             .logging
             .unwrap_or_else(logs::default_enabled);
-        if ui
-            .checkbox(&mut enabled, "Write a log file for troubleshooting")
-            .changed()
-        {
-            shared.store.change(|s| s.logging = Some(enabled));
-            logs::set_enabled(enabled);
-        }
-        if icons::button(ui, icons::CHOOSE, "Open log folder").clicked() {
+        let toggle = kit.on(|app, event| {
+            if let Event::Toggled { on, .. } = event {
+                let on = *on;
+                app.shared.store.change(|s| s.logging = Some(on));
+                logs::set_enabled(on);
+            }
+        });
+        let open = kit.on(|_, _| {
             let folder = crate::settings::data_dir();
             std::thread::spawn(move || {
                 let _ = std::fs::create_dir_all(&folder);
                 let _ = open::that_detached(folder);
             });
-        }
-    });
+        });
+        Node::container(
+            Layout::Horizontal,
+            vec![
+                Checkbox {
+                    label: "Write a log file for troubleshooting".into(),
+                    checked: enabled,
+                }
+                .node(toggle),
+                IconButton::new("folder-open", "Open log folder").node(open),
+            ],
+        )
+    }
 }

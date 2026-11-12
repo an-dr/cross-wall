@@ -1,264 +1,328 @@
-//! The Library and Liked screens: the wallpaper folder by folder or in groups,
-//! and the liked files. All changes go through the librarian thread and come
-//! back as the next snapshot.
+//! The Library screen: the wallpaper folder, one folder at a time or every
+//! folder as a section, with dragging between folders and organising.
+use bones_kernel::messages::ui::kinds::{
+    EmptyState, Heading, IconButton, Selectable, Space, Strong, Weak,
+};
+use bones_kernel::messages::ui::{icons, Event, Layout, Node, WidgetProps};
 use cross_wall_library::{file_name, join, parent};
 
-use super::shared::Shared;
+use super::kit::{stable_id, Kit};
 use super::shown::Shown;
-use super::widgets::empty_state;
-use crate::icons;
+use super::CrossWall;
 use crate::librarian::Command;
 
 #[derive(Default)]
 pub struct LibraryView {
-    /// The open folder in the folder view; the root is the empty string.
     current_folder: String,
 }
 
-impl LibraryView {
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        if shared.settings().wallpaper_folder.trim().is_empty() {
-            choose_folder_state(ui, shared);
-            return;
+impl CrossWall {
+    pub fn library_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        if self.shared.settings().wallpaper_folder.trim().is_empty() {
+            return choose_folder_state(kit);
         }
-        if !shared.snapshot.folders.contains(&self.current_folder) {
-            self.current_folder.clear();
+        if !self
+            .shared
+            .snapshot
+            .folders
+            .contains(&self.library.current_folder)
+        {
+            self.library.current_folder.clear();
         }
-        let groups = shared.settings().library_groups;
-        ui.horizontal(|ui| {
-            self.breadcrumb(ui, shared);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut chosen = groups;
-                ui.selectable_value(&mut chosen, true, icons::with(icons::GROUPS_VIEW, "Groups"));
-                ui.selectable_value(
-                    &mut chosen,
-                    false,
-                    icons::with(icons::FOLDERS_VIEW, "Folders"),
-                );
-                shared.store.change(|s| s.library_groups = chosen);
-                if icons::button(ui, icons::NEW_FOLDER, "New folder").clicked() {
-                    shared.organiser.new_folder(if chosen {
-                        String::new()
-                    } else {
-                        self.current_folder.clone()
-                    });
+        let groups = self.shared.settings().library_groups;
+        let mut nodes = vec![
+            self.library_toolbar(kit, groups),
+            Space { amount: 6.0 }.node(0),
+        ];
+        nodes.extend(self.progress_strip(false));
+        nodes.push(Space { amount: 6.0 }.node(0));
+        if self.shared.snapshot.files.is_empty() && self.shared.snapshot.folders.is_empty() {
+            nodes.push(
+                EmptyState {
+                    icon: "compass".into(),
+                    title: "This folder is empty".into(),
+                    detail:
+                        "Download wallpapers from Browse, or add images with your file manager."
+                            .into(),
                 }
-            });
-        });
-        ui.add_space(6.0);
-        shared.progress_strip(ui, false);
-        ui.add_space(6.0);
-        if shared.snapshot.files.is_empty() && shared.snapshot.folders.is_empty() {
-            empty_state(
-                ui,
-                icons::BROWSE,
-                "This folder is empty",
-                "Download wallpapers from Browse, or add images with your file manager.",
+                .node(0),
             );
-            return;
+            return nodes;
         }
-        let groups = shared.settings().library_groups;
-        let view = format!("{groups}/{}", self.current_folder);
-        let appear = shared.motion.transition(ui.ctx(), "library-view", view);
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                ui.set_opacity(appear);
-                ui.add_space((1.0 - appear) * 8.0);
-                if groups {
-                    self.groups_view(ui, shared);
-                } else {
-                    self.folder_view(ui, shared);
-                }
-                ui.add_space(8.0);
-            });
+        let content = if groups {
+            self.groups_view(kit)
+        } else {
+            self.folder_view(kit)
+        };
+        let view = format!("{groups}/{}", self.library.current_folder);
+        let faded = Node::Container {
+            id: stable_id("library-view"),
+            layout: Layout::Fade,
+            children: vec![Node::container(Layout::Vertical, content)],
+        };
+        nodes.push(Node::Container {
+            id: stable_id(("library-scroll", view)),
+            layout: Layout::Scroll,
+            children: vec![faded, Space { amount: 8.0 }.node(0)],
+        });
+        nodes
     }
 
-    /// The path to the open folder. Each part opens that folder and accepts a dropped item.
-    fn breadcrumb(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        if shared.settings().library_groups {
-            ui.heading("Library");
-            return;
+    fn library_toolbar(&mut self, kit: &mut Kit, groups: bool) -> Node {
+        let current = self.library.current_folder.clone();
+        let new_folder = kit.on(move |app, _| {
+            let parent = if groups { String::new() } else { current };
+            app.shared.organiser.new_folder(parent);
+        });
+        let as_groups = kit.on(|app, _| {
+            app.shared.store.change(|s| s.library_groups = true);
+        });
+        let as_folders = kit.on(|app, _| {
+            app.shared.store.change(|s| s.library_groups = false);
+        });
+        let trailing = Node::container(
+            Layout::RightToLeft,
+            vec![
+                IconButton::new("folder-plus", "New folder").node(new_folder),
+                Selectable {
+                    label: format!("{}  Folders", icons::FOLDER_TREE),
+                    selected: !groups,
+                }
+                .node(as_folders),
+                Selectable {
+                    label: format!("{}  Groups", icons::LAYOUT_GRID),
+                    selected: groups,
+                }
+                .node(as_groups),
+            ],
+        );
+        let mut row = self.breadcrumb(kit, groups);
+        row.push(trailing);
+        Node::container(Layout::Horizontal, row)
+    }
+
+    fn breadcrumb(&mut self, kit: &mut Kit, groups: bool) -> Vec<Node> {
+        if groups {
+            return vec![Heading {
+                text: "Library".into(),
+            }
+            .node(0)];
         }
-        let current = self.current_folder.clone();
+        let current = self.library.current_folder.clone();
         let mut parts = vec![(String::new(), "Library".to_string())];
         let mut built = String::new();
         for part in current.split('/').filter(|p| !p.is_empty()) {
             built = join(&built, part);
             parts.push((built.clone(), part.to_string()));
         }
-        for (index, (path, name)) in parts.iter().enumerate() {
+        let mut nodes = Vec::new();
+        for (index, (path, name)) in parts.into_iter().enumerate() {
             if index > 0 {
-                ui.weak("\u{203a}");
+                nodes.push(
+                    Weak {
+                        text: "\u{203a}".into(),
+                    }
+                    .node(0),
+                );
             }
-            let response = ui.selectable_label(*path == current, name);
-            if response.clicked() {
-                self.current_folder = path.clone();
+            let selected = path == current;
+            let opened = path.clone();
+            let id = kit.on(move |app, _| app.library.current_folder = opened);
+            let crumb = Selectable {
+                label: name,
+                selected,
             }
-            accept_drop(shared, &response, path);
+            .node(id);
+            nodes.push(self.drop_target(kit, &path, vec![crumb]));
         }
+        nodes
     }
 
-    fn folder_view(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let current = self.current_folder.clone();
-        let folders: Vec<String> = shared
+    fn folder_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        let current = self.library.current_folder.clone();
+        let folders: Vec<String> = self
+            .shared
             .snapshot
             .folders
             .iter()
             .filter(|f| parent(f) == current && **f != current)
             .cloned()
             .collect();
+        let mut nodes = Vec::new();
         if !folders.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                for folder in &folders {
-                    self.folder_chip(ui, shared, folder);
-                }
-            });
-            ui.add_space(10.0);
+            let chips = folders
+                .iter()
+                .map(|folder| self.folder_chip(kit, folder))
+                .collect();
+            nodes.push(Node::container(Layout::Wrap, chips));
+            nodes.push(Space { amount: 10.0 }.node(0));
         }
-        let items = files_in(shared, &current);
-        shared.shown = items.clone();
-        shared.gallery_rows(ui, &items);
+        let items = self.files_in(&current);
+        self.shared.shown = items.clone();
+        nodes.push(self.gallery(kit, &items));
+        nodes
     }
 
-    /// Every folder that holds images as one titled section, the root first.
-    fn groups_view(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+    fn groups_view(&mut self, kit: &mut Kit) -> Vec<Node> {
         let mut all = Vec::new();
-        for folder in std::iter::once(String::new()).chain(shared.snapshot.folders.clone()) {
-            let items = files_in(shared, &folder);
-            let response = ui.horizontal(|ui| {
-                let title = if folder.is_empty() {
-                    "Library".to_string()
-                } else {
-                    folder.replace('/', " \u{203a} ")
-                };
-                let heading = ui.add(
-                    egui::Label::new(egui::RichText::new(title).strong().size(16.0))
-                        .sense(egui::Sense::click()),
-                );
-                ui.weak(format!("{}", items.len()));
-                heading
+        let mut nodes = Vec::new();
+        let folders: Vec<String> = std::iter::once(String::new())
+            .chain(self.shared.snapshot.folders.clone())
+            .collect();
+        for folder in folders {
+            let items = self.files_in(&folder);
+            let title = if folder.is_empty() {
+                "Library".to_string()
+            } else {
+                folder.replace('/', " \u{203a} ")
+            };
+            let opened = folder.clone();
+            let open = kit.on(move |app, _| {
+                app.library.current_folder = opened;
+                app.shared.store.change(|s| s.library_groups = false);
             });
-            let heading = response.inner.on_hover_text("Open this folder");
-            if heading.clicked() {
-                self.current_folder = folder.clone();
-                shared.store.change(|s| s.library_groups = false);
-            }
-            accept_drop(shared, &heading, &folder);
+            let heading = Node::container(
+                Layout::Horizontal,
+                vec![
+                    Selectable {
+                        label: title,
+                        selected: false,
+                    }
+                    .node(open),
+                    Weak {
+                        text: format!("{}", items.len()),
+                    }
+                    .node(0),
+                ],
+            );
+            let heading = Node::container(
+                Layout::Tooltip,
+                vec![
+                    heading,
+                    Strong {
+                        text: "Open this folder".into(),
+                    }
+                    .node(0),
+                ],
+            );
+            let mut heading = self.drop_target(kit, &folder, vec![heading]);
             if !folder.is_empty() {
-                let mut chosen = None;
-                heading.context_menu(|ui| {
-                    chosen = shared
-                        .organiser
-                        .item_menu(ui, &folder, true, &shared.snapshot.folders)
-                });
-                if let Some(command) = chosen {
-                    shared.command(command);
-                }
+                let mut menu = vec![heading];
+                menu.extend(self.item_menu(kit, &folder, true));
+                heading = Node::container(Layout::ContextMenu, menu);
             }
-            ui.add_space(4.0);
-            shared.gallery_rows(ui, &items);
-            ui.add_space(12.0);
+            nodes.push(heading);
+            nodes.push(Space { amount: 4.0 }.node(0));
+            nodes.push(self.gallery(kit, &items));
+            nodes.push(Space { amount: 12.0 }.node(0));
             all.extend(items);
         }
-        shared.shown = all;
+        self.shared.shown = all;
+        nodes
     }
 
-    fn folder_chip(&mut self, ui: &mut egui::Ui, shared: &mut Shared, folder: &str) {
-        let count = shared
+    fn folder_chip(&mut self, kit: &mut Kit, folder: &str) -> Node {
+        let count = self
+            .shared
             .snapshot
             .files
             .iter()
             .filter(|e| e.folder() == folder)
             .count();
-        let text = icons::with(
-            icons::LIBRARY,
-            &format!("{}  \u{b7}  {count}", file_name(folder)),
-        );
-        let button = egui::Button::new(text)
-            .min_size(egui::vec2(150.0, 44.0))
-            .sense(egui::Sense::click());
-        let response = ui.add(button);
-        if response.clicked() {
-            self.current_folder = folder.to_string();
+        let label = format!("{}  {}  \u{b7}  {count}", icons::FOLDER, file_name(folder));
+        let opened = folder.to_string();
+        let open = kit.on(move |app, _| app.library.current_folder = opened);
+        let chip = Selectable {
+            label,
+            selected: false,
         }
-        accept_drop(shared, &response, folder);
-        if response.dnd_hover_payload::<String>().is_some() {
-            let stroke = egui::Stroke::new(2.0_f32, ui.visuals().selection.bg_fill);
-            ui.painter()
-                .rect_stroke(response.rect, 4.0, stroke, egui::StrokeKind::Inside);
-        }
-        let mut chosen = None;
-        response.context_menu(|ui| {
-            chosen = shared
-                .organiser
-                .item_menu(ui, folder, true, &shared.snapshot.folders)
+        .node(open);
+        let target = self.drop_target(kit, folder, vec![chip]);
+        let mut menu = vec![target];
+        menu.extend(self.item_menu(kit, folder, true));
+        Node::container(Layout::ContextMenu, menu)
+    }
+
+    /// Wraps `children` so a file or folder dragged onto them moves into `folder`.
+    fn drop_target(&mut self, kit: &mut Kit, folder: &str, children: Vec<Node>) -> Node {
+        let target = folder.to_string();
+        let id = kit.keyed(("drop", folder), move |app, event| {
+            let Event::Dropped { payload, .. } = event else {
+                return;
+            };
+            let Some(dragged) = app.dragged.get(payload).cloned() else {
+                return;
+            };
+            if parent(&dragged) != target && dragged != target {
+                app.shared.command(Command::Move {
+                    path: dragged,
+                    folder: target,
+                });
+            }
         });
-        if let Some(command) = chosen {
-            shared.command(command);
+        Node::Container {
+            id,
+            layout: Layout::DropTarget,
+            children,
         }
+    }
+
+    /// The Liked screen: every liked file, wherever it is in the folder.
+    pub fn liked_view(&mut self, kit: &mut Kit) -> Vec<Node> {
+        let items: Vec<Shown> = self
+            .shared
+            .snapshot
+            .files
+            .iter()
+            .filter(|e| e.info.liked)
+            .cloned()
+            .map(Shown::Local)
+            .collect();
+        if items.is_empty() {
+            return vec![EmptyState {
+                icon: "heart".into(),
+                title: "Nothing liked yet".into(),
+                detail: "Like a wallpaper in Browse or the Library to see it here.".into(),
+            }
+            .node(0)];
+        }
+        self.shared.shown = items.clone();
+        vec![Node::Container {
+            id: stable_id("liked-scroll"),
+            layout: Layout::Scroll,
+            children: vec![self.gallery(kit, &items)],
+        }]
+    }
+
+    fn files_in(&self, folder: &str) -> Vec<Shown> {
+        self.shared
+            .snapshot
+            .files
+            .iter()
+            .filter(|e| e.folder() == folder)
+            .cloned()
+            .map(Shown::Local)
+            .collect()
     }
 }
 
-/// The Liked screen: every liked file, wherever it is in the folder.
-pub fn liked_ui(ui: &mut egui::Ui, shared: &mut Shared) {
-    let items: Vec<Shown> = shared
-        .snapshot
-        .files
-        .iter()
-        .filter(|e| e.info.liked)
-        .cloned()
-        .map(Shown::Local)
-        .collect();
-    if items.is_empty() {
-        empty_state(
-            ui,
-            icons::LIKED,
-            "Nothing liked yet",
-            "Like a wallpaper in Browse or the Library to see it here.",
-        );
-        return;
-    }
-    shared.shown = items.clone();
-    egui::ScrollArea::vertical()
-        .auto_shrink(false)
-        .show(ui, |ui| shared.gallery_rows(ui, &items));
-}
-
-fn files_in(shared: &Shared, folder: &str) -> Vec<Shown> {
-    shared
-        .snapshot
-        .files
-        .iter()
-        .filter(|e| e.folder() == folder)
-        .cloned()
-        .map(Shown::Local)
-        .collect()
-}
-
-fn choose_folder_state(ui: &mut egui::Ui, shared: &Shared) {
-    empty_state(
-        ui,
-        icons::BROWSE,
-        "Choose your wallpaper folder",
-        "Downloads go to its root, and you can organise it from here.",
-    );
-    ui.vertical_centered(|ui| {
-        ui.add_space(8.0);
-        if icons::primary(ui, icons::CHOOSE, "Choose folder").clicked() {
-            shared.picker.open();
+fn choose_folder_state(kit: &mut Kit) -> Vec<Node> {
+    let choose = kit.on(|app, _| app.shared.picker.open());
+    vec![
+        EmptyState {
+            icon: "compass".into(),
+            title: "Choose your wallpaper folder".into(),
+            detail: "Downloads go to its root, and you can organise it from here.".into(),
         }
-    });
-}
-
-/// Moves an item dropped on this folder's widget into the folder.
-fn accept_drop(shared: &Shared, response: &egui::Response, folder: &str) {
-    if let Some(dragged) = response.dnd_release_payload::<String>() {
-        if parent(&dragged) != folder {
-            shared.command(Command::Move {
-                path: (*dragged).clone(),
-                folder: folder.to_string(),
-            });
-        }
-    }
+        .node(0),
+        Node::container(
+            Layout::Centred,
+            vec![
+                Space { amount: 8.0 }.node(0),
+                IconButton::new("folder-open", "Choose folder")
+                    .primary(true)
+                    .node(choose),
+            ],
+        ),
+    ]
 }

@@ -13,7 +13,7 @@ exclude = ["vendor/bones", "vendor/bones/crates/bones-messages"]
 # The app and its launcher ship together and must report the same version;
 # UPGRADER_LAUNCHER_VERSION in .cargo/config.toml repeats it.
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 
 # Unoptimised, decoding one large photo takes seconds, which makes `cargo run` look broken.
 [profile.dev.package.image]

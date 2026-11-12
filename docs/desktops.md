@@ -15,7 +15,7 @@ Applying replaces the COSMIC setting on all monitors and turns its per-monitor c
 
 ## Appearance
 
-The interface is drawn by egui, so it resembles each desktop without using its real controls ([ADR-001](adr/ADR-001-app-owned-egui-module-over-draw-target.md)). It takes these from the system, checking mode and accent every 5 seconds and display scale every second:
+The interface is drawn by bones' widgets in bones' native look, so it resembles each desktop without using its real controls ([ADR-004](adr/ADR-004-screens-are-built-from-bones-widgets.md)). bones takes these from the system, checking mode and accent every 5 seconds and display scale every second:
 
 | Desktop | Font | Light or dark | Accent |
 | --- | --- | --- | --- |

@@ -4,18 +4,14 @@
 mod app;
 mod assets;
 mod browse;
-mod chrome;
 mod clock;
-mod colour;
-mod egui_module;
 mod gallery;
-mod icons;
 mod images;
 mod installation;
 mod librarian;
 mod logs;
 mod settings;
-mod theme;
+mod window;
 
 use std::sync::mpsc::channel;
 
@@ -78,6 +74,10 @@ fn run() -> bones_kernel::Result<()> {
         .renderer()
         .upgrade(installation::config())
         .module(installation::UpdateBridge::new(request_rx, result_tx))
-        .module(egui_module::EguiModule::new(screens, logger))
+        .ui()
+        .module(bones_kernel::ui::ViewModule::new(
+            app::NAME,
+            app::AppView::new(screens),
+        ))
         .run()
 }
