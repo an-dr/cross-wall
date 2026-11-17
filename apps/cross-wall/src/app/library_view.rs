@@ -34,7 +34,7 @@ impl CrossWall {
             self.library_toolbar(kit, groups),
             Space { amount: 6.0 }.node(0),
         ];
-        nodes.extend(self.progress_strip(false));
+        nodes.push(self.progress_strip(false));
         nodes.push(Space { amount: 6.0 }.node(0));
         if self.shared.snapshot.files.is_empty() && self.shared.snapshot.folders.is_empty() {
             nodes.push(
@@ -56,7 +56,7 @@ impl CrossWall {
         };
         let view = format!("{groups}/{}", self.library.current_folder);
         let faded = Node::Container {
-            id: stable_id("library-view"),
+            id: stable_id(("library-view", &view)),
             layout: Layout::Fade,
             children: vec![Node::container(Layout::Vertical, content)],
         };

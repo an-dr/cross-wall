@@ -23,6 +23,8 @@ pub struct Settings {
     pub wallpaper_folder: String,
     /// Shows the library as sections per folder instead of one folder at a time.
     pub library_groups: bool,
+    /// Shows the side navigation as icons only.
+    pub navigation_collapsed: bool,
     /// Multiplies the display scale, which the app follows by itself.
     pub ui_zoom: f32,
     /// `None` follows the main display. `[0, 0]` is any size.
@@ -37,6 +39,7 @@ impl Default for Settings {
             theme: ThemeMode::Dark,
             wallpaper_folder: String::new(),
             library_groups: false,
+            navigation_collapsed: false,
             ui_zoom: 1.0,
             min_resolution: None,
             logging: None,
@@ -167,6 +170,7 @@ mod tests {
             theme: ThemeMode::Light,
             wallpaper_folder: "f".into(),
             library_groups: true,
+            navigation_collapsed: true,
             ui_zoom: 1.5,
             min_resolution: Some([3840, 2160]),
             logging: Some(true),
