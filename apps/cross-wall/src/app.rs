@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
-use bones_kernel::messages::ui::kinds::{Selectable, TitleBar};
+use bones_kernel::messages::ui::kinds::{IconButton, Label, Selectable, TitleBar};
 use bones_kernel::messages::ui::{icons, Event, Layout, Node, PanelSide, Root, Spec, WidgetProps};
 use bones_kernel::messages::upgrader::Action;
 use bones_kernel::ui::{Frame, Theme, UiView};
@@ -146,8 +146,11 @@ impl CrossWall {
         }
     }
 
-    /// The side navigation.
+    /// The side navigation: a toggle that collapses it to icons, then one
+    /// entry per screen, each on one line. Collapsed, the full label shows
+    /// as a tooltip.
     fn navigation(&mut self, kit: &mut Kit) -> Vec<Node> {
+        let collapsed = self.shared.settings().navigation_collapsed;
         let files = &self.shared.snapshot.files;
         let liked = files.iter().filter(|e| e.info.liked).count();
         let items = [
@@ -160,17 +163,49 @@ impl CrossWall {
             (Tab::Liked, icons::HEART, format!("Liked  \u{b7}  {liked}")),
             (Tab::Settings, icons::SETTINGS, "Settings".to_string()),
         ];
-        items
-            .into_iter()
-            .map(|(tab, icon, label)| {
-                let id = kit.on(move |app, _| app.tab = tab);
-                Selectable {
-                    label: format!("{icon}   {label}"),
-                    selected: self.tab == tab,
-                }
-                .node(id)
-            })
-            .collect()
+        let toggle = kit.on(move |app, _| {
+            app.shared
+                .store
+                .change(|s| s.navigation_collapsed = !collapsed);
+        });
+        let (icon, hint) = if collapsed {
+            ("panel-left-open", "Expand")
+        } else {
+            ("panel-left-close", "Collapse")
+        };
+        let mut nodes = vec![Node::container(
+            Layout::Tooltip,
+            vec![
+                IconButton::new(icon, "").node(toggle),
+                Label { text: hint.into() }.node(0),
+            ],
+        )];
+        for (tab, icon, label) in items {
+            let id = kit.on(move |app, _| app.tab = tab);
+            let selected = self.tab == tab;
+            if collapsed {
+                nodes.push(Node::container(
+                    Layout::Tooltip,
+                    vec![
+                        Selectable {
+                            label: icon.to_string(),
+                            selected,
+                        }
+                        .node(id),
+                        Label { text: label }.node(0),
+                    ],
+                ));
+            } else {
+                nodes.push(
+                    Selectable {
+                        label: format!("{icon}   {label}"),
+                        selected,
+                    }
+                    .node(id),
+                );
+            }
+        }
+        nodes
     }
 
     fn theme(&self) -> Theme {

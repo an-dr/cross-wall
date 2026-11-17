@@ -2,8 +2,8 @@
 //! the thumbnail behind it, loaded when the tile first comes on screen.
 use std::sync::Arc;
 
-use bones_kernel::messages::ui::kinds::{Hyperlink, IconButton, Label, Progress, Spinner};
-use bones_kernel::messages::ui::{icons, Event, Layout, Node, WidgetProps};
+use bones_kernel::messages::ui::kinds::{IconButton, Label, Progress, Spinner};
+use bones_kernel::messages::ui::{Event, Layout, Node, WidgetProps};
 
 use super::kit::{stable_id, Kit};
 use super::shared::{chosen_folder, Shared};
@@ -53,11 +53,8 @@ impl CrossWall {
         let (width, height) = item.size();
         let (width, height) = fit_u16(width, height);
         let liked = self.shared.entry_for(item).is_some_and(|e| e.info.liked);
-        let badge = if liked {
-            icons::HEART.chars().next().map_or(0, u32::from)
-        } else {
-            0
-        };
+        // A filled heart: the icon font only has outlines.
+        let badge = if liked { u32::from('\u{2665}') } else { 0 };
         let actions = self.tile_actions(kit, item);
         let shown = item.clone();
         let id = kit.keyed(("tile", &key), move |app, event| match event {
@@ -107,17 +104,8 @@ impl CrossWall {
             let id = kit.on(move |app, _| app.shared.start_apply(&shown));
             nodes.push(IconButton::new("wallpaper", "Apply").node(id));
         }
+        // The credit and licence are in the preview, not on every tile.
         nodes.extend(self.keep_buttons(kit, item, false));
-        let credit = item.credit();
-        if !credit.link.is_empty() {
-            nodes.push(
-                Hyperlink {
-                    label: credit.name.to_string(),
-                    url: credit.link.to_string(),
-                }
-                .node(0),
-            );
-        }
         nodes
     }
 
@@ -168,7 +156,9 @@ impl CrossWall {
     }
 
     /// The thin bar under a screen's header: images loading, or a search.
-    pub fn progress_strip(&mut self, asking: bool) -> Option<Node> {
+    /// Always present, idle when nothing loads: a strip that came and went
+    /// moved the gallery under it up and down while it scrolled.
+    pub fn progress_strip(&mut self, asking: bool) -> Node {
         let progress = self.shared.images.progress();
         let (fraction, text) = match progress {
             Some((done, total)) => (
@@ -176,9 +166,9 @@ impl CrossWall {
                 format!("Loading wallpapers {done} / {total}"),
             ),
             None if asking => (-1.0, String::new()),
-            None => return None,
+            None => (f32::NAN, String::new()),
         };
-        Some(Progress { fraction, text }.node(0))
+        Progress { fraction, text }.node(0)
     }
 }
 

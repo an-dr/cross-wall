@@ -57,7 +57,7 @@ impl CrossWall {
 
         let mut nodes = vec![self.browse_toolbar(kit), Space { amount: 6.0 }.node(0)];
         let browse = &self.browse.browse;
-        nodes.extend(self.progress_strip(browse.loading));
+        nodes.push(self.progress_strip(browse.loading));
         let browse = &self.browse.browse;
         if browse.photos.is_empty() && browse.loading {
             nodes.push(
