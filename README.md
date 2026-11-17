@@ -56,6 +56,8 @@ Needs a Rust toolchain, a C compiler, CMake, and Ninja, because bones builds SDL
 
 Run the tests with `cargo test --workspace`. To package and publish, see [docs/releasing.md](docs/releasing.md).
 
+With [just](https://github.com/casey/just) installed, `just` lists shortcuts for these commands: `just run`, `just test`, `just check` for the checks CI runs, `just package` for a release zip, `just dist` to unpack this machine's release into `dist/` and run it from there, and others.
+
 ## Documentation
 
 Start at [docs/index.md](docs/index.md) for use cases, architecture, desktop support, and decisions.
