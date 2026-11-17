@@ -99,10 +99,16 @@ fn file_uri(path: &Path) -> String {
     uri
 }
 
-/// Writes what cosmic-bg watches: the `all` entry, used on every output when `same-on-all` is set.
+/// The configurations cosmic-bg reads: the shared one before COSMIC 1.11, then one per theme mode.
+const COSMIC_CONFIGS: [&str; 3] = [
+    "com.system76.CosmicBackground",
+    "com.system76.CosmicBackground.Light",
+    "com.system76.CosmicBackground.Dark",
+];
+
+/// Writes what cosmic-bg watches: the `all` entry, used on every output when `same-on-all` is set,
+/// into every configuration, so the wallpaper shows in light and dark mode on any COSMIC version.
 fn cosmic(config_home: &Path, image: &Path) -> Result<(), String> {
-    let dir = config_home.join("cosmic/com.system76.CosmicBackground/v1");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = image
         .to_string_lossy()
         .replace('\\', "\\\\")
@@ -110,11 +116,17 @@ fn cosmic(config_home: &Path, image: &Path) -> Result<(), String> {
     let entry = format!(
         "(\n    output: \"all\",\n    source: Path(\"{path}\"),\n    filter_by_theme: false,\n    rotation_frequency: 300,\n    filter_method: Lanczos,\n    scaling_mode: Zoom,\n    sampling_method: Alphanumeric,\n)"
     );
-    for (name, text) in [("same-on-all", "true"), ("all", entry.as_str())] {
-        let target = dir.join(name);
-        let temporary = dir.join(format!(".{name}.tmp"));
-        std::fs::write(&temporary, text).map_err(|e| format!("{}: {e}", temporary.display()))?;
-        std::fs::rename(&temporary, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+    for config in COSMIC_CONFIGS {
+        let dir = config_home.join("cosmic").join(config).join("v1");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (name, text) in [("same-on-all", "true"), ("all", entry.as_str())] {
+            let target = dir.join(name);
+            let temporary = dir.join(format!(".{name}.tmp"));
+            std::fs::write(&temporary, text)
+                .map_err(|e| format!("{}: {e}", temporary.display()))?;
+            std::fs::rename(&temporary, &target)
+                .map_err(|e| format!("{}: {e}", target.display()))?;
+        }
     }
     Ok(())
 }
@@ -176,16 +188,24 @@ mod tests {
     }
 
     #[test]
-    fn cosmic_writes_the_entry_and_escapes_the_path() {
+    fn cosmic_writes_the_shared_light_and_dark_configurations() {
         let dir = tempfile::tempdir().unwrap();
         cosmic(dir.path(), Path::new("/home/a\"b.jpg")).unwrap();
-        let base = dir.path().join("cosmic/com.system76.CosmicBackground/v1");
-        let all = std::fs::read_to_string(base.join("all")).unwrap();
-        assert!(all.contains(r#"source: Path("/home/a\"b.jpg")"#), "{all}");
-        assert!(all.contains("scaling_mode: Zoom"));
-        assert_eq!(
-            std::fs::read_to_string(base.join("same-on-all")).unwrap(),
-            "true"
-        );
+        // Named here, not taken from COSMIC_CONFIGS: COSMIC 1.11 reads only the
+        // Light and Dark ones, and older versions only the shared one.
+        for config in [
+            "com.system76.CosmicBackground",
+            "com.system76.CosmicBackground.Light",
+            "com.system76.CosmicBackground.Dark",
+        ] {
+            let base = dir.path().join("cosmic").join(config).join("v1");
+            let all = std::fs::read_to_string(base.join("all")).unwrap();
+            assert!(all.contains(r#"source: Path("/home/a\"b.jpg")"#), "{all}");
+            assert!(all.contains("scaling_mode: Zoom"));
+            assert_eq!(
+                std::fs::read_to_string(base.join("same-on-all")).unwrap(),
+                "true"
+            );
+        }
     }
 }
